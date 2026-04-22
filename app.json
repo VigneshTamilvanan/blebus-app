@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "nammayatri-ble-app",
+    "name": "blebus",
     "slug": "blebus",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -15,8 +15,8 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSBluetoothAlwaysUsageDescription": "Used to detect nearby Namma Yatri buses",
-        "NSBluetoothPeripheralUsageDescription": "Used to detect nearby Namma Yatri buses"
+        "NSBluetoothAlwaysUsageDescription": "Used to detect nearby buses via BLE beacons",
+        "NSBluetoothPeripheralUsageDescription": "Used to detect nearby buses via BLE beacons"
       }
     },
     "android": {
@@ -24,7 +24,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "in.nammayatri.blebus",
+      "package": "com.blebus.app",
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "permissions": [
