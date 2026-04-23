@@ -23,11 +23,29 @@ export async function setupNotifications(): Promise<void> {
   await Notifications.requestPermissionsAsync();
 }
 
+export async function notifyCandidate(busId: string): Promise<void> {
+  // Fixed identifier so re-detections replace rather than stack
+  await Notifications.scheduleNotificationAsync({
+    identifier: 'ble-candidate',
+    content: {
+      title: 'Bus detected nearby',
+      body: `Verifying ${busId} — hold on…`,
+      data: { busId, event: 'candidate' },
+    },
+    trigger: null,
+  });
+}
+
+export async function dismissCandidate(): Promise<void> {
+  await Notifications.dismissNotificationAsync('ble-candidate').catch(() => {});
+}
+
 export async function notifyBoarded(busId: string): Promise<void> {
+  await dismissCandidate();
   await Notifications.scheduleNotificationAsync({
     content: {
-      title: 'Boarded',
-      body: `You have boarded ${busId}`,
+      title: '🚌 Boarded',
+      body: `You are on ${busId}`,
       data: { busId, event: 'boarded' },
     },
     trigger: null,
@@ -38,7 +56,7 @@ export async function notifyDeboarded(busId: string): Promise<void> {
   await Notifications.scheduleNotificationAsync({
     content: {
       title: 'Deboarded',
-      body: `You have deboarded ${busId}`,
+      body: `You have left ${busId}`,
       data: { busId, event: 'deboarded' },
     },
     trigger: null,

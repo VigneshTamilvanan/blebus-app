@@ -2,7 +2,7 @@ import { DeviceEventEmitter } from 'react-native';
 import BackgroundActions from 'react-native-background-actions';
 import { BusDetectionEngine, DetectionResult, ScanResult } from '../ble/detection';
 import { startScan } from '../ble/scanner';
-import { notifyBoarded, notifyDeboarded } from './notifications';
+import { dismissCandidate, notifyBoarded, notifyCandidate, notifyDeboarded } from './notifications';
 
 export const BLE_DETECTION_EVENT = 'ble_detection_update';
 
@@ -33,8 +33,15 @@ export async function bleTaskFn(taskDataArguments?: { customNames: string[] }): 
       // Emit to UI — works when app process is alive (foreground or bg service)
       DeviceEventEmitter.emit(BLE_DETECTION_EVENT, { result: detection, rawScans: scanResults });
 
-      // Local notifications for boarding / deboarding
-      if (lastState !== 'confirmed' && detection.state === 'confirmed' && detection.busId) {
+      // Notifications on state transitions
+      if (lastState === 'scanning' && detection.state === 'candidate' && detection.busId) {
+        // Bus just appeared — alert user so they can open the app
+        notifyCandidate(detection.busId).catch(() => {});
+      } else if (lastState === 'candidate' && detection.state === 'scanning') {
+        // Candidate was reset (passing bus or signal lost before confirming)
+        dismissCandidate().catch(() => {});
+      } else if (lastState !== 'confirmed' && detection.state === 'confirmed' && detection.busId) {
+        // Boarding confirmed — dismisses candidate notification automatically
         notifyBoarded(detection.busId).catch(() => {});
       } else if (lastState === 'confirmed' && detection.state === 'lost' && detection.busId) {
         notifyDeboarded(detection.busId).catch(() => {});
