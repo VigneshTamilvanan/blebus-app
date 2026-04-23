@@ -4,8 +4,7 @@ const BOARD_DISTANCE_M = 5.0;
 
 // ── Detection thresholds ──────────────────────────────────────────────────────
 const STRONG_THRESHOLD      = -87;  // avg RSSI must exceed this to be a candidate
-const RELATIVE_MARGIN       = 5;    // dB lead over second-best required
-const STABILITY_SECONDS     = 6.0;  // candidate must dominate stably for this long
+const STABILITY_SECONDS     = 6.0;  // candidate must be stable for this long to confirm
 const SWITCH_WEAK_THRESHOLD = -83;
 const SWITCH_RIVAL_MARGIN   = 5;
 const SWITCH_RIVAL_SECONDS  = 5.0;
@@ -28,6 +27,7 @@ export type SignalTrend    = 'approaching' | 'receding' | 'stable';
 
 export interface ScanResult {
   busId:   string;
+  isBus:   boolean;  // true = real bus beacon (manufacturer data / NY-BUS- prefix)
   rawRssi: number;
   avgRssi: number;
 }
@@ -81,29 +81,28 @@ function toTrend(slope: number): SignalTrend {
   return 'stable';
 }
 
+// ── Per-beacon track (used during searching phase) ────────────────────────────
+interface BeaconTrack {
+  firstSeen:    number;
+  recedingSince: number | null;
+  rssiHistory:  number[];
+}
+
 // ── Engine ────────────────────────────────────────────────────────────────────
 export class BusDetectionEngine {
-  private state:          DetectionState = 'scanning';
-  private confirmedBus:   string | null  = null;
-  private candidateBus:   string | null  = null;
-  private candidateSince: number | null  = null;
-  private lostSince:      number | null  = null;
-  private rivalSince:     number | null  = null;
-  private rivalId:        string | null  = null;
-  private rssiHistory:    number[]       = [];
-  // Passing-bus guard: track how long candidate has been receding
-  private recedingSince:  number | null  = null;
+  private state:        DetectionState = 'scanning';
+  private confirmedBus: string | null  = null;
+  private lostSince:    number | null  = null;
+  private rivalSince:   number | null  = null;
+  private rivalId:      string | null  = null;
 
-  private pushHistory(avgRssi: number): SignalTrend {
-    this.rssiHistory.push(avgRssi);
-    if (this.rssiHistory.length > TREND_WINDOW) this.rssiHistory.shift();
-    return toTrend(rssiSlope(this.rssiHistory));
-  }
+  // Multi-beacon candidate tracking: each beacon above the noise floor gets
+  // its own independent track. We confirm whichever one has been stable the
+  // longest without being a passing bus.
+  private tracks: Map<string, BeaconTrack> = new Map();
 
-  private clearHistory(): void {
-    this.rssiHistory  = [];
-    this.recedingSince = null;
-  }
+  // History for the confirmed beacon (used in handleConfirmed)
+  private rssiHistory: number[] = [];
 
   update(scanResults: ScanResult[]): DetectionResult {
     const t = now();
@@ -117,76 +116,96 @@ export class BusDetectionEngine {
   }
 
   private handleSearching(results: ScanResult[], t: number): DetectionResult {
-    const sorted = [...results].sort((a, b) => b.avgRssi - a.avgRssi);
-    const best   = sorted[0] ?? null;
-    const second = sorted[1] ?? null;
+    // ── Priority filter ────────────────────────────────────────────────────
+    // If any real bus beacon (manufacturer data / NY-BUS- prefix) is above
+    // the noise floor, ignore custom test-device entries entirely.
+    // This prevents a nearby printer/watch interfering with a real bus beacon.
+    const aboveFloor = results.filter(r => r.avgRssi > STRONG_THRESHOLD);
+    const busBeacons = aboveFloor.filter(r => r.isBus);
+    const active     = busBeacons.length > 0 ? busBeacons : aboveFloor;
 
-    if (!best) {
-      this.resetCandidate();
+    if (active.length === 0) {
+      this.tracks.clear();
       this.state = 'scanning';
       return this.idle();
     }
 
-    const dist   = rssiToDistance(best.avgRssi);
-    const dscore = distanceToScore(dist);
+    // ── Update per-beacon tracks ───────────────────────────────────────────
+    const activeIds = new Set(active.map(r => r.busId));
 
-    // Rule A: signal must clear noise floor
-    if (best.avgRssi <= STRONG_THRESHOLD) {
-      this.resetCandidate();
-      this.state = 'scanning';
-      return this.idle();
+    // Remove tracks for beacons that dropped out of range
+    for (const id of this.tracks.keys()) {
+      if (!activeIds.has(id)) this.tracks.delete(id);
     }
 
-    // Rule B: must clearly lead over second-best (avoids ambiguous multi-bus scenarios)
-    const lead = second ? best.avgRssi - second.avgRssi : 20;
-    if (lead < RELATIVE_MARGIN) {
-      this.resetCandidate();
-      this.state = 'scanning';
-      return { busId: null, state: 'scanning', confidence: 0, rawRssi: best.rawRssi, avgRssi: best.avgRssi, distanceM: dist, distanceScore: dscore, trend: 'stable' };
-    }
-
-    // New candidate or same candidate — start/continue tracking
-    if (this.candidateBus !== best.busId) {
-      this.candidateBus   = best.busId;
-      this.candidateSince = t;
-      this.clearHistory();
-    }
-
-    const elapsed = t - this.candidateSince!;
-    const trend   = this.pushHistory(best.avgRssi);
-
-    // ── Passing-bus guard ──────────────────────────────────────────────────
-    // If the candidate is moving away from us during the dwell window, it's
-    // a passing bus — reset so we don't falsely board.
-    if (trend === 'receding') {
-      if (this.recedingSince === null) this.recedingSince = t;
-      if (t - this.recedingSince >= PASSING_BUS_RECEDE_SECS) {
-        console.log('[BLE] Passing-bus detected — resetting candidate');
-        this.resetCandidate();
-        this.state = 'scanning';
-        return this.idle();
+    // Update or create a track for each active beacon; apply passing-bus guard
+    const surviving: ScanResult[] = [];
+    for (const beacon of active) {
+      let track = this.tracks.get(beacon.busId);
+      if (!track) {
+        track = { firstSeen: t, recedingSince: null, rssiHistory: [] };
+        this.tracks.set(beacon.busId, track);
       }
-    } else {
-      this.recedingSince = null;
+
+      track.rssiHistory.push(beacon.avgRssi);
+      if (track.rssiHistory.length > TREND_WINDOW) track.rssiHistory.shift();
+
+      const trend = toTrend(rssiSlope(track.rssiHistory));
+
+      // Passing-bus guard: if this beacon has been receding for too long it's
+      // a bus driving past — drop its track so it can't confirm.
+      if (trend === 'receding') {
+        if (track.recedingSince === null) track.recedingSince = t;
+        if (t - track.recedingSince >= PASSING_BUS_RECEDE_SECS) {
+          console.log('[BLE] Passing-bus —', beacon.busId, '— dropping track');
+          this.tracks.delete(beacon.busId);
+          continue;
+        }
+      } else {
+        track.recedingSince = null;
+      }
+
+      surviving.push(beacon);
     }
 
-    const conf = this.confidence(dscore, lead, elapsed);
+    if (surviving.length === 0) {
+      this.state = 'scanning';
+      return this.idle();
+    }
+
+    // ── Pick the best candidate ────────────────────────────────────────────
+    // Primary sort: longest continuous time above the threshold (user is
+    // staying near this beacon). Tiebreak: highest average RSSI.
+    surviving.sort((a, b) => {
+      const elapsedA = t - this.tracks.get(a.busId)!.firstSeen;
+      const elapsedB = t - this.tracks.get(b.busId)!.firstSeen;
+      if (Math.abs(elapsedA - elapsedB) > 2) return elapsedB - elapsedA;
+      return b.avgRssi - a.avgRssi;
+    });
+
+    const best  = surviving[0];
+    const track = this.tracks.get(best.busId)!;
+    const elapsed = t - track.firstSeen;
+    const trend   = toTrend(rssiSlope(track.rssiHistory));
+    const dist    = rssiToDistance(best.avgRssi);
+    const dscore  = distanceToScore(dist);
+    const conf    = this.confidence(dscore, elapsed);
 
     // ── Boarding confirmation ──────────────────────────────────────────────
-    // Requires: (1) dwell time, (2) low RSSI variance (stationary beacon).
     if (elapsed >= STABILITY_SECONDS) {
-      const variance = rssiVariance(this.rssiHistory);
+      const variance = rssiVariance(track.rssiHistory);
       if (variance <= MAX_VARIANCE_TO_CONFIRM) {
         this.state        = 'confirmed';
         this.confirmedBus = best.busId;
+        this.rssiHistory  = [...track.rssiHistory];
         this.lostSince    = null;
         this.rivalSince   = null;
+        this.tracks.clear();
         return { busId: best.busId, state: 'confirmed', confidence: conf, rawRssi: best.rawRssi, avgRssi: best.avgRssi, distanceM: dist, distanceScore: dscore, trend };
       }
-      // Variance too high — still moving. Stay candidate, reset timer so we
-      // wait another full STABILITY_SECONDS once signal settles.
-      console.log('[BLE] Variance too high (', variance.toFixed(1), ') — deferring boarding confirmation');
-      this.candidateSince = t;
+      // Signal still too noisy — reset this beacon's timer and wait for it to settle
+      console.log('[BLE] Variance too high (', variance.toFixed(1), ') for', best.busId, '— deferring');
+      track.firstSeen = t;
     }
 
     this.state = 'candidate';
@@ -202,7 +221,7 @@ export class BusDetectionEngine {
       if (t - this.lostSince >= EXIT_SECONDS) {
         this.state        = 'lost';
         this.confirmedBus = null;
-        this.clearHistory();
+        this.rssiHistory  = [];
         const raw = cur?.rawRssi ?? -99;
         const avg = cur?.avgRssi ?? -99;
         const d   = rssiToDistance(avg);
@@ -219,7 +238,9 @@ export class BusDetectionEngine {
     const dist   = rssiToDistance(cur.avgRssi);
     const dscore = distanceToScore(dist);
     const rival  = results.find(r => r.busId !== confirmed) ?? null;
-    const trend  = this.pushHistory(cur.avgRssi);
+    this.rssiHistory.push(cur.avgRssi);
+    if (this.rssiHistory.length > TREND_WINDOW) this.rssiHistory.shift();
+    const trend  = toTrend(rssiSlope(this.rssiHistory));
 
     // Bus-switch logic: only switch if current is weak AND rival is sustainedly stronger
     if (cur.avgRssi < SWITCH_WEAK_THRESHOLD && rival && (rival.avgRssi - cur.avgRssi) >= SWITCH_RIVAL_MARGIN) {
@@ -232,9 +253,9 @@ export class BusDetectionEngine {
         this.rivalSince   = null;
         this.rivalId      = null;
         this.lostSince    = null;
-        this.clearHistory();
+        this.rssiHistory  = [];
         const rd   = rssiToDistance(rival.avgRssi);
-        const conf = this.confidence(distanceToScore(rd), rival.avgRssi - cur.avgRssi, STABILITY_SECONDS);
+        const conf = this.confidence(distanceToScore(rd), STABILITY_SECONDS);
         return { busId: rival.busId, state: 'confirmed', confidence: conf, rawRssi: rival.rawRssi, avgRssi: rival.avgRssi, distanceM: rd, distanceScore: distanceToScore(rd), trend: 'approaching' };
       }
     } else {
@@ -242,31 +263,25 @@ export class BusDetectionEngine {
       this.rivalId    = null;
     }
 
-    const lead = rival ? cur.avgRssi - rival.avgRssi : 20;
-    const conf = this.confidence(dscore, lead, STABILITY_SECONDS);
+    const conf = this.confidence(dscore, STABILITY_SECONDS);
     return { busId: confirmed, state: 'confirmed', confidence: conf, rawRssi: cur.rawRssi, avgRssi: cur.avgRssi, distanceM: dist, distanceScore: dscore, trend };
   }
 
   private handleLost(results: ScanResult[], t: number): DetectionResult {
-    this.resetCandidate();
-    this.lostSince = null;
-    this.state     = 'scanning';
+    this.tracks.clear();
+    this.rssiHistory = [];
+    this.lostSince   = null;
+    this.state       = 'scanning';
     return this.handleSearching(results, t);
-  }
-
-  private resetCandidate(): void {
-    this.candidateBus   = null;
-    this.candidateSince = null;
-    this.clearHistory();
   }
 
   private idle(): DetectionResult {
     return { busId: null, state: 'scanning', confidence: 0, rawRssi: 0, avgRssi: 0, distanceM: 0, distanceScore: 0, trend: 'stable' };
   }
 
-  private confidence(dscore: number, leadMargin: number, stableSecs: number): number {
-    const leadScore      = clamp(leadMargin / 10, 0, 1);
+  // Confidence is now based on distance score × how long the beacon has been stable
+  private confidence(dscore: number, stableSecs: number): number {
     const stabilityScore = clamp(stableSecs / STABILITY_SECONDS, 0, 1);
-    return Math.round(dscore * leadScore * stabilityScore * 1000) / 1000;
+    return Math.round(dscore * stabilityScore * 1000) / 1000;
   }
 }

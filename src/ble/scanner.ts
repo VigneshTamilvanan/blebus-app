@@ -21,21 +21,21 @@ function rollingAvg(busId: string, rssi: number): number {
   return buf.reduce((a, b) => a + b, 0) / buf.length;
 }
 
-function parseBusId(device: Device, customNames: string[]): string | null {
+function parseBusId(device: Device, customNames: string[]): { busId: string; isBus: boolean } | null {
   // Production: manufacturer data with our company ID
   if (device.manufacturerData) {
     try {
       const binary = atob(device.manufacturerData);
       if (binary.length > 2) {
         const companyId = binary.charCodeAt(0) | (binary.charCodeAt(1) << 8);
-        if (companyId === COMPANY_ID) return binary.slice(2);
+        if (companyId === COMPANY_ID) return { busId: binary.slice(2), isBus: true };
       }
     } catch {}
   }
   // Production: NY-BUS- name prefix
-  if (device.name?.startsWith(NAME_PREFIX)) return device.name;
-  // Test mode: exact match against user-entered custom device names
-  if (device.name && customNames.includes(device.name)) return device.name;
+  if (device.name?.startsWith(NAME_PREFIX)) return { busId: device.name, isBus: true };
+  // Test mode: custom device names — flagged as non-bus so engine deprioritises them
+  if (device.name && customNames.includes(device.name)) return { busId: device.name, isBus: false };
   return null;
 }
 
@@ -125,12 +125,13 @@ export function startScan(
           if (error) { console.error('[BLE] Scan error:', error.message); onError(error); return; }
           if (!device || device.rssi === null || device.rssi < NOISE_FLOOR) return;
           if (device.name) console.log('[BLE] Raw device:', device.name, device.rssi, 'dBm');
-          const busId = parseBusId(device, customNames);
-          if (busId) console.log('[BLE] Found beacon:', busId, 'RSSI:', device.rssi);
-          if (!busId) return;
+          const parsed = parseBusId(device, customNames);
+          if (parsed) console.log('[BLE] Found beacon:', parsed.busId, 'isBus:', parsed.isBus, 'RSSI:', device.rssi);
+          if (!parsed) return;
+          const { busId, isBus } = parsed;
           const avg = rollingAvg(busId, device.rssi);
           lastSeen[busId] = Date.now();
-          latest[busId]   = { busId, rawRssi: device.rssi, avgRssi: avg };
+          latest[busId]   = { busId, isBus, rawRssi: device.rssi, avgRssi: avg };
         });
       }
     }, true);
