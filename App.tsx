@@ -2,6 +2,7 @@ import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { setupNotifications } from './src/background/notifications';
+import { promptBatteryOptimizationIfNeeded } from './src/utils/batteryOptimization';
 import { useBusDetection } from './src/hooks/useBusDetection';
 import { useLocation } from './src/hooks/useLocation';
 import { useTripLogger } from './src/hooks/useTripLogger';
@@ -14,7 +15,10 @@ type Tab = 'home' | 'history' | 'settings';
 export default function App() {
   const [tab, setTab] = useState<Tab>('home');
 
-  useEffect(() => { setupNotifications(); }, []);
+  useEffect(() => {
+    setupNotifications();
+    promptBatteryOptimizationIfNeeded();
+  }, []);
 
   const { result, rawScans, error, restartScan } = useBusDetection();
   const locationRef = useLocation();

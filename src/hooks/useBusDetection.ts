@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { DeviceEventEmitter } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { AppState, AppStateStatus, DeviceEventEmitter, Platform } from 'react-native';
 import BackgroundActions from 'react-native-background-actions';
 import { DetectionResult, ScanResult } from '../ble/detection';
 import { getCustomNames } from '../store/filterStore';
@@ -23,6 +23,7 @@ export function useBusDetection() {
   const [result, setResult]     = useState<DetectionResult>(IDLE);
   const [rawScans, setRawScans] = useState<ScanResult[]>([]);
   const [error, setError]       = useState<string | null>(null);
+  const appState                = useRef<AppStateStatus>(AppState.currentState);
 
   const restartScan = async () => {
     if (BackgroundActions.isRunning()) await BackgroundActions.stop();
@@ -42,10 +43,25 @@ export function useBusDetection() {
       },
     );
 
+    // On Android (especially MIUI/Samsung) the OS may kill the foreground service
+    // while the app is backgrounded. Re-check on every foreground transition and
+    // restart the service if it was killed.
+    const appStateSub = Platform.OS === 'android'
+      ? AppState.addEventListener('change', (next: AppStateStatus) => {
+          const prev = appState.current;
+          appState.current = next;
+          if (prev.match(/inactive|background/) && next === 'active') {
+            if (!BackgroundActions.isRunning()) {
+              console.log('[BLE] Service was killed while backgrounded — restarting');
+              startService(setError);
+            }
+          }
+        })
+      : null;
+
     return () => {
       sub.remove();
-      // Stop the service when the root component unmounts (app fully closed by RN runtime).
-      // On Android this also cancels the foreground service notification.
+      appStateSub?.remove();
       BackgroundActions.stop();
     };
   }, []);

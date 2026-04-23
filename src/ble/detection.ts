@@ -1,4 +1,4 @@
-const TX_POWER_1M      = -67.0;  // calibrated: ESP32 +9dBm TX, measured -74 dBm at 2m
+const TX_POWER_1M      = -80.0;  // calibrated: ESP32 +9dBm TX, measured -80 dBm at 1m
 const PATH_LOSS_N      = 2.5;
 const BOARD_DISTANCE_M = 5.0;
 
