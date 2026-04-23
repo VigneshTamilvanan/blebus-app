@@ -24,6 +24,7 @@ export async function setupNotifications(): Promise<void> {
 }
 
 const CHANNEL = 'ble-detection';
+const trigger = { channelId: CHANNEL };
 
 export async function notifyCandidate(busId: string): Promise<void> {
   await Notifications.scheduleNotificationAsync({
@@ -32,9 +33,8 @@ export async function notifyCandidate(busId: string): Promise<void> {
       title: 'Bus detected nearby',
       body: `Verifying ${busId} — hold on…`,
       data: { busId, event: 'candidate' },
-      android: { channelId: CHANNEL },
     },
-    trigger: null,
+    trigger,
   });
 }
 
@@ -49,9 +49,8 @@ export async function notifyBoarded(busId: string): Promise<void> {
       title: '🚌 Boarded',
       body: `You are on ${busId}`,
       data: { busId, event: 'boarded' },
-      android: { channelId: CHANNEL },
     },
-    trigger: null,
+    trigger,
   });
 }
 
@@ -61,8 +60,7 @@ export async function notifyDeboarded(busId: string): Promise<void> {
       title: 'Deboarded',
       body: `You have left ${busId}`,
       data: { busId, event: 'deboarded' },
-      android: { channelId: CHANNEL },
     },
-    trigger: null,
+    trigger,
   });
 }
