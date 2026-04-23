@@ -13,7 +13,7 @@ const EXIT_SECONDS          = 5.0;
 
 // ── Passing-bus / noisy-signal guards ────────────────────────────────────────
 // If the candidate signal is receding for this long, it's a passing bus — reset.
-const PASSING_BUS_RECEDE_SECS = 2.5;
+const PASSING_BUS_RECEDE_SECS = 4.0;
 // Maximum RSSI variance (dBm²) allowed when confirming. A moving beacon has high
 // variance; a stationary one (bus at stop, user inside) stays flat.
 const MAX_VARIANCE_TO_CONFIRM = 10.0;

@@ -6,7 +6,7 @@ const COMPANY_ID     = 0xffff;
 const NOISE_FLOOR    = -95;  // engine's STRONG_THRESHOLD (-87) is the real gate; don't pre-filter here
 const ROLLING_WINDOW = 5;
 const NAME_PREFIX    = 'NY-BUS-';
-const STALE_MS       = 2500;
+const STALE_MS       = 6000;  // must exceed Android BLE scan gaps (~3-4 s)
 
 const manager = new BleManager();
 
