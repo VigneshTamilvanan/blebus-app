@@ -3,12 +3,12 @@ const PATH_LOSS_N      = 2.5;
 const BOARD_DISTANCE_M = 5.0;
 
 // ── Detection thresholds ──────────────────────────────────────────────────────
-const STRONG_THRESHOLD      = -87;  // avg RSSI must exceed this to be a candidate
+const STRONG_THRESHOLD      = -96;  // avg RSSI must exceed this to be a candidate
 const STABILITY_SECONDS     = 6.0;  // candidate must be stable for this long to confirm
-const SWITCH_WEAK_THRESHOLD = -83;
+const SWITCH_WEAK_THRESHOLD = -90;
 const SWITCH_RIVAL_MARGIN   = 5;
 const SWITCH_RIVAL_SECONDS  = 5.0;
-const EXIT_RSSI_THRESHOLD   = -93;
+const EXIT_RSSI_THRESHOLD   = -97;
 const EXIT_SECONDS          = 5.0;
 
 // ── Passing-bus / noisy-signal guards ────────────────────────────────────────

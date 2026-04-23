@@ -33,6 +33,11 @@ export async function bleTaskFn(taskDataArguments?: { customNames: string[] }): 
       // Emit to UI — works when app process is alive (foreground or bg service)
       DeviceEventEmitter.emit(BLE_DETECTION_EVENT, { result: detection, rawScans: scanResults });
 
+      // Log every state change so we can trace the detection pipeline
+      if (detection.state !== lastState) {
+        console.log('[BLE] State:', lastState, '→', detection.state, '|', detection.busId, '| avg:', detection.avgRssi.toFixed(0), 'conf:', detection.confidence.toFixed(2));
+      }
+
       // Notifications on state transitions
       if (lastState === 'scanning' && detection.state === 'candidate' && detection.busId) {
         // Bus just appeared — alert user so they can open the app

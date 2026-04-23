@@ -3,7 +3,7 @@ import { Alert, Linking, PermissionsAndroid, Platform } from 'react-native';
 import { ScanResult } from './detection';
 
 const COMPANY_ID     = 0xffff;
-const NOISE_FLOOR    = -85;
+const NOISE_FLOOR    = -95;  // engine's STRONG_THRESHOLD (-87) is the real gate; don't pre-filter here
 const ROLLING_WINDOW = 5;
 const NAME_PREFIX    = 'NY-BUS-';
 const STALE_MS       = 2500;
@@ -126,7 +126,9 @@ export function startScan(
         manager.startDeviceScan(null, { allowDuplicates: true }, (error, device) => {
           if (error) { console.error('[BLE] Scan error:', error.message); onError(error); return; }
           if (!device || device.rssi === null || device.rssi < NOISE_FLOOR) return;
+          // Log named devices and any device with manufacturer data (ESP32 has no name)
           if (device.name) console.log('[BLE] Raw device:', device.name, device.rssi, 'dBm');
+          else if (device.manufacturerData) console.log('[BLE] Raw mfr device:', device.id.slice(-5), device.rssi, 'dBm');
           const parsed = parseBusId(device, customNames);
           if (parsed) console.log('[BLE] Found beacon:', parsed.busId, 'isBus:', parsed.isBus, 'RSSI:', device.rssi);
           if (!parsed) return;
