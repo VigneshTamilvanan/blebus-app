@@ -3,13 +3,19 @@ import * as SQLite from 'expo-sqlite';
 export interface Trip {
   id:            number;
   bus_id:        string;
-  boarded_at:    number;   // ms timestamp
+  boarded_at:    number;
   deboarded_at:  number | null;
   board_lat:     number | null;
   board_lng:     number | null;
   deboard_lat:   number | null;
   deboard_lng:   number | null;
   duration_secs: number | null;
+}
+
+export interface Breadcrumb {
+  lat:         number;
+  lng:         number;
+  recorded_at: number;
 }
 
 let _db: SQLite.SQLiteDatabase | null = null;
@@ -29,6 +35,13 @@ async function db(): Promise<SQLite.SQLiteDatabase> {
         deboard_lng   REAL,
         duration_secs INTEGER
       );
+      CREATE TABLE IF NOT EXISTS trip_coords (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        trip_id     INTEGER NOT NULL,
+        lat         REAL    NOT NULL,
+        lng         REAL    NOT NULL,
+        recorded_at INTEGER NOT NULL
+      );
     `);
   }
   return _db;
@@ -42,8 +55,7 @@ export async function insertBoarding(
 ): Promise<number> {
   const d = await db();
   const result = await d.runAsync(
-    `INSERT INTO trips (bus_id, boarded_at, board_lat, board_lng)
-     VALUES (?, ?, ?, ?)`,
+    `INSERT INTO trips (bus_id, boarded_at, board_lat, board_lng) VALUES (?, ?, ?, ?)`,
     [busId, boardedAt, lat, lng],
   );
   return result.lastInsertRowId;
@@ -56,16 +68,39 @@ export async function updateDeboarding(
   lng: number | null,
 ): Promise<void> {
   const d = await db();
-  const duration = await d.getFirstAsync<{ boarded_at: number }>(
+  const row = await d.getFirstAsync<{ boarded_at: number }>(
     `SELECT boarded_at FROM trips WHERE id = ?`, [tripId],
   );
-  const secs = duration ? Math.round((deboardedAt - duration.boarded_at) / 1000) : null;
+  const secs = row ? Math.round((deboardedAt - row.boarded_at) / 1000) : null;
   await d.runAsync(
-    `UPDATE trips
-     SET deboarded_at = ?, deboard_lat = ?, deboard_lng = ?, duration_secs = ?
-     WHERE id = ?`,
+    `UPDATE trips SET deboarded_at = ?, deboard_lat = ?, deboard_lng = ?, duration_secs = ? WHERE id = ?`,
     [deboardedAt, lat, lng, secs, tripId],
   );
+}
+
+export async function insertBreadcrumb(
+  tripId: number,
+  lat: number,
+  lng: number,
+): Promise<void> {
+  const d = await db();
+  await d.runAsync(
+    `INSERT INTO trip_coords (trip_id, lat, lng, recorded_at) VALUES (?, ?, ?, ?)`,
+    [tripId, lat, lng, Date.now()],
+  );
+}
+
+export async function fetchBreadcrumbs(tripId: number): Promise<Breadcrumb[]> {
+  const d = await db();
+  return d.getAllAsync<Breadcrumb>(
+    `SELECT lat, lng, recorded_at FROM trip_coords WHERE trip_id = ? ORDER BY recorded_at ASC`,
+    [tripId],
+  );
+}
+
+export async function fetchTrip(tripId: number): Promise<Trip | null> {
+  const d = await db();
+  return d.getFirstAsync<Trip>(`SELECT * FROM trips WHERE id = ?`, [tripId]) ?? null;
 }
 
 export async function fetchTrips(limit = 50): Promise<Trip[]> {
@@ -78,4 +113,5 @@ export async function fetchTrips(limit = 50): Promise<Trip[]> {
 export async function clearTrips(): Promise<void> {
   const d = await db();
   await d.runAsync(`DELETE FROM trips`);
+  await d.runAsync(`DELETE FROM trip_coords`);
 }

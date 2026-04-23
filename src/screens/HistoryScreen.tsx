@@ -1,10 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert, FlatList, Modal, SafeAreaView, StyleSheet,
   Text, TouchableOpacity, View,
 } from 'react-native';
-import MapView, { Marker, Polyline } from 'react-native-maps';
-import { Trip, clearTrips, fetchTrips } from '../db/database';
+import TripMap, { Coord } from '../components/TripMap';
+import { Breadcrumb, Trip, clearTrips, fetchBreadcrumbs, fetchTrips } from '../db/database';
 
 const NY_YELLOW = '#FFD000';
 const NY_GREEN  = '#00A651';
@@ -38,39 +38,13 @@ function hasCoords(trip: Trip): boolean {
 
 // ── Trip Map Modal ────────────────────────────────────────────────────────────
 
-function TripMapModal({ trip, onClose }: { trip: Trip; onClose: () => void }) {
-  const mapRef = useRef<MapView>(null);
-
-  const boardCoord = trip.board_lat !== null && trip.board_lng !== null
-    ? { latitude: trip.board_lat, longitude: trip.board_lng }
-    : null;
-
-  const deboardCoord = trip.deboard_lat !== null && trip.deboard_lng !== null
-    ? { latitude: trip.deboard_lat, longitude: trip.deboard_lng }
-    : null;
-
-  // Fit map to show both markers with padding
-  const onMapReady = () => {
-    const coords = [boardCoord, deboardCoord].filter(Boolean) as { latitude: number; longitude: number }[];
-    if (coords.length === 0) return;
-    if (coords.length === 1) {
-      mapRef.current?.animateToRegion({
-        ...coords[0],
-        latitudeDelta: 0.005,
-        longitudeDelta: 0.005,
-      }, 300);
-    } else {
-      mapRef.current?.fitToCoordinates(coords, {
-        edgePadding: { top: 80, right: 60, bottom: 80, left: 60 },
-        animated: true,
-      });
-    }
-  };
+function TripMapModal({ trip, breadcrumbs, onClose }: { trip: Trip; breadcrumbs: Breadcrumb[]; onClose: () => void }) {
+  const toCoord = (lat: number | null, lng: number | null): Coord | null =>
+    lat !== null && lng !== null ? { lat, lng } : null;
 
   return (
     <Modal animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <SafeAreaView style={mapStyles.root}>
-        {/* Header */}
         <View style={mapStyles.header}>
           <View>
             <Text style={mapStyles.busId}>{trip.bus_id}</Text>
@@ -81,52 +55,24 @@ function TripMapModal({ trip, onClose }: { trip: Trip; onClose: () => void }) {
           </TouchableOpacity>
         </View>
 
-        {/* Map */}
-        <MapView
-          ref={mapRef}
-          style={mapStyles.map}
-          onMapReady={onMapReady}
-          initialRegion={
-            boardCoord
-              ? { ...boardCoord, latitudeDelta: 0.01, longitudeDelta: 0.01 }
-              : { latitude: 12.9716, longitude: 77.5946, latitudeDelta: 0.05, longitudeDelta: 0.05 }
-          }
-        >
-          {boardCoord && (
-            <Marker
-              coordinate={boardCoord}
-              title="Boarded"
-              description={formatTime(trip.boarded_at)}
-              pinColor={NY_GREEN}
-            />
-          )}
-          {deboardCoord && (
-            <Marker
-              coordinate={deboardCoord}
-              title="Deboarded"
-              description={trip.deboarded_at ? formatTime(trip.deboarded_at) : ''}
-              pinColor={NY_RED}
-            />
-          )}
-          {boardCoord && deboardCoord && (
-            <Polyline
-              coordinates={[boardCoord, deboardCoord]}
-              strokeColor={NY_YELLOW}
-              strokeWidth={3}
-              lineDashPattern={[8, 4]}
-            />
-          )}
-        </MapView>
+        <TripMap
+          style={{ flex: 1 }}
+          boardCoord={toCoord(trip.board_lat, trip.board_lng)}
+          deboardCoord={toCoord(trip.deboard_lat, trip.deboard_lng)}
+          breadcrumbs={breadcrumbs.map(b => ({ lat: b.lat, lng: b.lng }))}
+        />
 
-        {/* Legend */}
         <View style={mapStyles.legend}>
-          <LegendRow color={NY_GREEN} label="Boarded" value={formatCoord(trip.board_lat, trip.board_lng)} />
+          <LegendRow color={NY_GREEN} label="Boarded"   value={formatCoord(trip.board_lat, trip.board_lng)} />
           {trip.deboarded_at
-            ? <LegendRow color={NY_RED} label="Deboarded" value={formatCoord(trip.deboard_lat, trip.deboard_lng)} />
-            : <LegendRow color={NY_GREEN} label="Status" value="Trip active" />
+            ? <LegendRow color={NY_RED}  label="Deboarded" value={formatCoord(trip.deboard_lat, trip.deboard_lng)} />
+            : <LegendRow color={NY_GREEN} label="Status"   value="Trip active" />
           }
           {trip.duration_secs !== null && (
             <LegendRow color={NY_DARK} label="Duration" value={formatDuration(trip.duration_secs)} />
+          )}
+          {breadcrumbs.length > 0 && (
+            <LegendRow color={NY_YELLOW} label="Route pts" value={String(breadcrumbs.length)} />
           )}
         </View>
       </SafeAreaView>
@@ -190,9 +136,10 @@ function Col({ label, value, color, mono }: { label: string; value: string; colo
 // ── Screen ────────────────────────────────────────────────────────────────────
 
 export default function HistoryScreen() {
-  const [trips, setTrips]       = useState<Trip[]>([]);
-  const [loading, setLoading]   = useState(true);
-  const [mapTrip, setMapTrip]   = useState<Trip | null>(null);
+  const [trips, setTrips]             = useState<Trip[]>([]);
+  const [loading, setLoading]         = useState(true);
+  const [mapTrip, setMapTrip]         = useState<Trip | null>(null);
+  const [mapCrumbs, setMapCrumbs]     = useState<Breadcrumb[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -233,7 +180,11 @@ export default function HistoryScreen() {
           data={trips}
           keyExtractor={t => String(t.id)}
           renderItem={({ item }) => (
-            <TripCard trip={item} onMapPress={() => setMapTrip(item)} />
+            <TripCard trip={item} onMapPress={async () => {
+              const crumbs = await fetchBreadcrumbs(item.id);
+              setMapCrumbs(crumbs);
+              setMapTrip(item);
+            }} />
           )}
           contentContainerStyle={{ padding: 16, paddingBottom: 32 }}
           onRefresh={load}
@@ -242,7 +193,7 @@ export default function HistoryScreen() {
       )}
 
       {mapTrip && (
-        <TripMapModal trip={mapTrip} onClose={() => setMapTrip(null)} />
+        <TripMapModal trip={mapTrip} breadcrumbs={mapCrumbs} onClose={() => { setMapTrip(null); setMapCrumbs([]); }} />
       )}
     </View>
   );
@@ -284,7 +235,6 @@ const mapStyles = StyleSheet.create({
   subtitle:    { fontSize: 12, color: NY_GREY, marginTop: 2 },
   closeBtn:    { backgroundColor: NY_YELLOW, borderRadius: 8, paddingHorizontal: 14, paddingVertical: 6 },
   closeTxt:    { fontWeight: '700', color: NY_DARK, fontSize: 14 },
-  map:         { flex: 1 },
   legend:      { padding: 16, borderTopWidth: 1, borderTopColor: '#EEE', gap: 10 },
   legendRow:   { flexDirection: 'row', alignItems: 'center', gap: 10 },
   legendDot:   { width: 10, height: 10, borderRadius: 5 },

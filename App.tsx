@@ -18,14 +18,14 @@ export default function App() {
 
   const { result, rawScans, error, restartScan } = useBusDetection();
   const locationRef = useLocation();
-  useTripLogger(result, locationRef);
+  const { lastCompletedTripId } = useTripLogger(result, locationRef);
 
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
 
       <View style={styles.content}>
-        {tab === 'home'     && <HomeScreen result={result} rawScans={rawScans} error={error} />}
+        {tab === 'home'     && <HomeScreen result={result} rawScans={rawScans} error={error} lastCompletedTripId={lastCompletedTripId} />}
         {tab === 'history'  && <HistoryScreen />}
         {tab === 'settings' && <SettingsScreen onSave={restartScan} />}
       </View>

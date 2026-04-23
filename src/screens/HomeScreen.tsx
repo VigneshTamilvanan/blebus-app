@@ -1,6 +1,8 @@
-import React, { useEffect, useRef } from 'react';
-import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Animated, Easing, Modal, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { DetectionResult, DetectionState, ScanResult, SignalTrend } from '../ble/detection';
+import { Breadcrumb, Trip, fetchBreadcrumbs, fetchTrip } from '../db/database';
+import TripMap, { Coord } from '../components/TripMap';
 
 // ── Namma Yatri palette ───────────────────────────────────────────────────────
 const NY_YELLOW  = '#FFD000';
@@ -106,12 +108,89 @@ function PulseRings({ color }: { color: string }) {
   );
 }
 
-// ── Main screen ───────────────────────────────────────────────────────────────
-interface Props { result: DetectionResult; rawScans: ScanResult[]; error: string | null; }
+// ── Post-trip map modal ───────────────────────────────────────────────────────
+function PostTripMap({ trip, breadcrumbs, onClose }: { trip: Trip; breadcrumbs: Breadcrumb[]; onClose: () => void }) {
+  const toCoord = (lat: number | null, lng: number | null): Coord | null =>
+    lat !== null && lng !== null ? { lat, lng } : null;
 
-export default function HomeScreen({ result, rawScans, error }: Props) {
+  return (
+    <Modal animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+      <SafeAreaView style={ptStyles.root}>
+        <View style={ptStyles.header}>
+          <View>
+            <Text style={ptStyles.busId}>{trip.bus_id}</Text>
+            <Text style={ptStyles.sub}>
+              {trip.duration_secs !== null
+                ? `${Math.floor(trip.duration_secs / 60)}m ${trip.duration_secs % 60}s ride`
+                : 'Trip route'}
+            </Text>
+          </View>
+          <TouchableOpacity onPress={onClose} style={ptStyles.closeBtn}>
+            <Text style={ptStyles.closeTxt}>Done</Text>
+          </TouchableOpacity>
+        </View>
+        <TripMap
+          style={{ flex: 1 }}
+          boardCoord={toCoord(trip.board_lat, trip.board_lng)}
+          deboardCoord={toCoord(trip.deboard_lat, trip.deboard_lng)}
+          breadcrumbs={breadcrumbs.map(b => ({ lat: b.lat, lng: b.lng }))}
+        />
+        <View style={ptStyles.legend}>
+          <View style={ptStyles.legendRow}>
+            <View style={[ptStyles.dot, { backgroundColor: NY_GREEN }]} />
+            <Text style={ptStyles.legendTxt}>Boarded</Text>
+            <View style={[ptStyles.dot, { backgroundColor: NY_RED, marginLeft: 16 }]} />
+            <Text style={ptStyles.legendTxt}>Deboarded</Text>
+            {breadcrumbs.length > 0 && <>
+              <View style={[ptStyles.line, { marginLeft: 16 }]} />
+              <Text style={ptStyles.legendTxt}>Route ({breadcrumbs.length} pts)</Text>
+            </>}
+          </View>
+        </View>
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
+// ── Main screen ───────────────────────────────────────────────────────────────
+interface Props {
+  result: DetectionResult;
+  rawScans: ScanResult[];
+  error: string | null;
+  lastCompletedTripId: number | null;
+}
+
+export default function HomeScreen({ result, rawScans, error, lastCompletedTripId }: Props) {
   const cfg    = STATE_CFG[result.state];
   const active = result.state === 'candidate' || result.state === 'confirmed';
+
+  // Post-trip map state
+  const [mapTrip,        setMapTrip]        = useState<Trip | null>(null);
+  const [mapBreadcrumbs, setMapBreadcrumbs] = useState<Breadcrumb[]>([]);
+  const [showMap,        setShowMap]        = useState(false);
+
+  const openTripMap = useCallback(async (tripId: number) => {
+    const [trip, crumbs] = await Promise.all([fetchTrip(tripId), fetchBreadcrumbs(tripId)]);
+    if (!trip) return;
+    setMapTrip(trip);
+    setMapBreadcrumbs(crumbs);
+    setShowMap(true);
+  }, []);
+
+  // Show post-trip card when a new trip completes
+  const prevTripId = useRef<number | null>(null);
+  const [postTripId, setPostTripId] = useState<number | null>(null);
+  useEffect(() => {
+    if (lastCompletedTripId !== null && lastCompletedTripId !== prevTripId.current) {
+      prevTripId.current = lastCompletedTripId;
+      setPostTripId(lastCompletedTripId);
+    }
+  }, [lastCompletedTripId]);
+
+  // Dismiss post-trip card when user boards again
+  useEffect(() => {
+    if (result.state === 'confirmed') setPostTripId(null);
+  }, [result.state]);
 
   // Badge bounce + flash on state change
   const badgeScale   = useRef(new Animated.Value(1)).current;
@@ -206,6 +285,34 @@ export default function HomeScreen({ result, rawScans, error }: Props) {
       </View>
 
       {error && <Text style={styles.error}>{error}</Text>}
+
+      {/* ── Post-trip card ── */}
+      {postTripId !== null && (
+        <View style={styles.postTripCard}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.postTripTitle}>Trip complete</Text>
+            <Text style={styles.postTripSub}>See where you boarded and deboarded</Text>
+          </View>
+          <TouchableOpacity
+            style={styles.postTripBtn}
+            onPress={() => openTripMap(postTripId)}
+          >
+            <Text style={styles.postTripBtnTxt}>View route</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setPostTripId(null)} style={styles.postTripClose}>
+            <Text style={{ color: NY_GREY, fontSize: 16 }}>✕</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* ── Post-trip map modal ── */}
+      {showMap && mapTrip && (
+        <PostTripMap
+          trip={mapTrip}
+          breadcrumbs={mapBreadcrumbs}
+          onClose={() => setShowMap(false)}
+        />
+      )}
     </View>
   );
 }
@@ -265,4 +372,26 @@ const styles = StyleSheet.create({
   debugRow:      { color: '#00FF88', fontFamily: 'monospace', fontSize: 11, paddingVertical: 1 },
 
   error:         { marginTop: 12, color: NY_RED, fontSize: 12 },
+
+  // Post-trip card
+  postTripCard:    { position: 'absolute', bottom: 16, left: 16, right: 16, flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 14, padding: 14, elevation: 4, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, gap: 8 },
+  postTripTitle:   { fontSize: 14, fontWeight: '800', color: NY_DARK },
+  postTripSub:     { fontSize: 11, color: NY_GREY, marginTop: 2 },
+  postTripBtn:     { backgroundColor: NY_YELLOW, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 8 },
+  postTripBtnTxt:  { fontWeight: '700', color: NY_DARK, fontSize: 13 },
+  postTripClose:   { padding: 4 },
+});
+
+const ptStyles = StyleSheet.create({
+  root:      { flex: 1, backgroundColor: '#fff' },
+  header:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#EEE' },
+  busId:     { fontSize: 17, fontWeight: '800', color: NY_DARK },
+  sub:       { fontSize: 12, color: NY_GREY, marginTop: 2 },
+  closeBtn:  { backgroundColor: NY_YELLOW, borderRadius: 8, paddingHorizontal: 14, paddingVertical: 6 },
+  closeTxt:  { fontWeight: '700', color: NY_DARK, fontSize: 14 },
+  legend:    { paddingHorizontal: 16, paddingVertical: 12, borderTopWidth: 1, borderTopColor: '#EEE' },
+  legendRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 4 },
+  dot:       { width: 10, height: 10, borderRadius: 5 },
+  line:      { width: 20, height: 3, backgroundColor: NY_YELLOW, borderRadius: 2 },
+  legendTxt: { fontSize: 12, color: NY_GREY, fontWeight: '600' },
 });
