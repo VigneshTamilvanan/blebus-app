@@ -100,7 +100,9 @@ export function startScan(
         delete rssiBuffers[id];
       }
     }
-    onResults(Object.values(latest));
+    const all = Object.values(latest);
+    const hasBus = all.some(r => r.isBus);
+    onResults(hasBus ? all.filter(r => r.isBus) : all);
   }, 1000);
 
   requestAndroidPermissions().then((granted) => {
