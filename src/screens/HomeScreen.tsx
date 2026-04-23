@@ -1,7 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
-import { useBusDetection } from '../hooks/useBusDetection';
-import { DetectionState, SignalTrend } from '../ble/detection';
+import { DetectionResult, DetectionState, ScanResult, SignalTrend } from '../ble/detection';
 
 // ── Namma Yatri palette ───────────────────────────────────────────────────────
 const NY_YELLOW  = '#FFD000';
@@ -108,8 +107,9 @@ function PulseRings({ color }: { color: string }) {
 }
 
 // ── Main screen ───────────────────────────────────────────────────────────────
-export default function HomeScreen() {
-  const { result, rawScans, error } = useBusDetection();
+interface Props { result: DetectionResult; rawScans: ScanResult[]; error: string | null; }
+
+export default function HomeScreen({ result, rawScans, error }: Props) {
   const cfg    = STATE_CFG[result.state];
   const active = result.state === 'candidate' || result.state === 'confirmed';
 

@@ -1,12 +1,12 @@
 import { BleManager, Device, State } from 'react-native-ble-plx';
-import { PermissionsAndroid, Platform } from 'react-native';
+import { Alert, Linking, PermissionsAndroid, Platform } from 'react-native';
 import { ScanResult } from './detection';
 
 const COMPANY_ID     = 0xffff;
 const NOISE_FLOOR    = -85;
 const ROLLING_WINDOW = 5;
 const NAME_PREFIX    = 'NY-BUS-';
-const STALE_MS       = 2500; // remove beacon from latest if not seen for 2.5s
+const STALE_MS       = 2500;
 
 const manager = new BleManager();
 
@@ -21,7 +21,8 @@ function rollingAvg(busId: string, rssi: number): number {
   return buf.reduce((a, b) => a + b, 0) / buf.length;
 }
 
-function parseBusId(device: Device): string | null {
+function parseBusId(device: Device, customNames: string[]): string | null {
+  // Production: manufacturer data with our company ID
   if (device.manufacturerData) {
     try {
       const binary = atob(device.manufacturerData);
@@ -31,7 +32,10 @@ function parseBusId(device: Device): string | null {
       }
     } catch {}
   }
+  // Production: NY-BUS- name prefix
   if (device.name?.startsWith(NAME_PREFIX)) return device.name;
+  // Test mode: exact match against user-entered custom device names
+  if (device.name && customNames.includes(device.name)) return device.name;
   return null;
 }
 
@@ -53,15 +57,41 @@ async function requestAndroidPermissions(): Promise<boolean> {
   }
 }
 
+function promptEnableBluetooth(): void {
+  if (Platform.OS === 'android') {
+    // ACTION_REQUEST_ENABLE shows the system "Turn on Bluetooth?" dialog.
+    // manager.enable() is deprecated/no-op on Android 12+, so we use the intent directly.
+    Linking.sendIntent('android.bluetooth.adapter.action.REQUEST_ENABLE').catch(() => {
+      Alert.alert(
+        'Bluetooth is off',
+        'Please enable Bluetooth to detect nearby buses.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Open Settings', onPress: () => Linking.openSettings() },
+        ],
+      );
+    });
+  } else {
+    Alert.alert(
+      'Bluetooth is off',
+      'Please enable Bluetooth in Settings to detect nearby buses.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Open Settings', onPress: () => Linking.openURL('App-Prefs:Bluetooth') },
+      ],
+    );
+  }
+}
+
 export function startScan(
   onResults: (results: ScanResult[]) => void,
   onError: (err: Error) => void,
+  customNames: string[] = [],
 ): () => void {
   const latest: Record<string, ScanResult> = {};
   let stopped = false;
 
   const interval = setInterval(() => {
-    // Expire beacons not seen within STALE_MS — critical for deboarding
     const now = Date.now();
     for (const id of Object.keys(latest)) {
       if (now - (lastSeen[id] ?? 0) > STALE_MS) {
@@ -84,12 +114,18 @@ export function startScan(
     manager.onStateChange((state) => {
       console.log('[BLE] Bluetooth state:', state);
       if (stopped) return;
+
+      if (state === State.PoweredOff) {
+        promptEnableBluetooth();
+      }
+
       if (state === State.PoweredOn) {
         console.log('[BLE] Starting device scan...');
         manager.startDeviceScan(null, { allowDuplicates: true }, (error, device) => {
           if (error) { console.error('[BLE] Scan error:', error.message); onError(error); return; }
           if (!device || device.rssi === null || device.rssi < NOISE_FLOOR) return;
-          const busId = parseBusId(device);
+          if (device.name) console.log('[BLE] Raw device:', device.name, device.rssi, 'dBm');
+          const busId = parseBusId(device, customNames);
           if (busId) console.log('[BLE] Found beacon:', busId, 'RSSI:', device.rssi);
           if (!busId) return;
           const avg = rollingAvg(busId, device.rssi);
