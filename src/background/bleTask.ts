@@ -2,7 +2,7 @@ import { DeviceEventEmitter } from 'react-native';
 import BackgroundActions from 'react-native-background-actions';
 import { BusDetectionEngine, DetectionResult, ScanResult } from '../ble/detection';
 import { startScan } from '../ble/scanner';
-import { dismissCandidate, notifyBoarded, notifyCandidate, notifyDeboarded } from './notifications';
+import { dismissCandidate, notifyBoarded, notifyCandidate, notifyDeboarded, setupNotifications } from './notifications';
 
 export const BLE_DETECTION_EVENT = 'ble_detection_update';
 
@@ -22,6 +22,11 @@ export const BLE_TASK_OPTIONS = {
 };
 
 export async function bleTaskFn(taskDataArguments?: { customNames: string[] }): Promise<void> {
+  // Ensure the notification channel exists before firing any notifications.
+  // setupNotifications() in App.tsx only runs when the UI is mounted, which
+  // doesn't happen in background — so we call it here too.
+  await setupNotifications();
+
   const customNames = taskDataArguments?.customNames ?? [];
   const engine      = new BusDetectionEngine();
   let lastState     = 'scanning';
