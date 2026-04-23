@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Animated, Easing, Modal, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Animated, Easing, Modal, Platform, SafeAreaView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { DetectionResult, DetectionState, ScanResult, SignalTrend } from '../ble/detection';
 import { Breadcrumb, Trip, fetchBreadcrumbs, fetchTrip } from '../db/database';
 import TripMap, { Coord } from '../components/TripMap';
@@ -108,44 +108,97 @@ function PulseRings({ color }: { color: string }) {
   );
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function formatTime(ms: number): string {
+  return new Date(ms).toLocaleString('en-IN', {
+    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true,
+  });
+}
+function formatCoord(lat: number | null, lng: number | null): string {
+  if (lat === null || lng === null) return 'No GPS';
+  return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+}
+function formatDuration(secs: number): string {
+  const m = Math.floor(secs / 60), s = secs % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
 // ── Post-trip map modal ───────────────────────────────────────────────────────
 function PostTripMap({ trip, breadcrumbs, onClose }: { trip: Trip; breadcrumbs: Breadcrumb[]; onClose: () => void }) {
   const toCoord = (lat: number | null, lng: number | null): Coord | null =>
     lat !== null && lng !== null ? { lat, lng } : null;
+  const statusBarH = Platform.OS === 'android' ? (StatusBar.currentHeight ?? 24) : 0;
 
   return (
     <Modal animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <SafeAreaView style={ptStyles.root}>
-        <View style={ptStyles.header}>
-          <View>
+        <View style={[ptStyles.header, { paddingTop: ptStyles.header.paddingTop + statusBarH }]}>
+          <View style={{ flex: 1, marginRight: 12 }}>
             <Text style={ptStyles.busId}>{trip.bus_id}</Text>
-            <Text style={ptStyles.sub}>
-              {trip.duration_secs !== null
-                ? `${Math.floor(trip.duration_secs / 60)}m ${trip.duration_secs % 60}s ride`
-                : 'Trip route'}
+            <Text style={ptStyles.duration}>
+              {trip.duration_secs != null ? formatDuration(trip.duration_secs) + ' ride' : 'Trip route'}
             </Text>
           </View>
           <TouchableOpacity onPress={onClose} style={ptStyles.closeBtn}>
             <Text style={ptStyles.closeTxt}>Done</Text>
           </TouchableOpacity>
         </View>
+
         <TripMap
           style={{ flex: 1 }}
           boardCoord={toCoord(trip.board_lat, trip.board_lng)}
           deboardCoord={toCoord(trip.deboard_lat, trip.deboard_lng)}
           breadcrumbs={breadcrumbs.map(b => ({ lat: b.lat, lng: b.lng }))}
         />
-        <View style={ptStyles.legend}>
-          <View style={ptStyles.legendRow}>
+
+        <View style={ptStyles.panel}>
+          <View style={ptStyles.panelRow}>
             <View style={[ptStyles.dot, { backgroundColor: NY_GREEN }]} />
-            <Text style={ptStyles.legendTxt}>Boarded</Text>
-            <View style={[ptStyles.dot, { backgroundColor: NY_RED, marginLeft: 16 }]} />
-            <Text style={ptStyles.legendTxt}>Deboarded</Text>
-            {breadcrumbs.length > 0 && <>
-              <View style={[ptStyles.line, { marginLeft: 16 }]} />
-              <Text style={ptStyles.legendTxt}>Route ({breadcrumbs.length} pts)</Text>
-            </>}
+            <View style={{ flex: 1 }}>
+              <View style={ptStyles.panelRowTop}>
+                <Text style={ptStyles.panelLabel}>Boarded</Text>
+                <Text style={ptStyles.panelTime}>{formatTime(trip.boarded_at)}</Text>
+              </View>
+              <Text style={ptStyles.panelCoord}>{formatCoord(trip.board_lat, trip.board_lng)}</Text>
+            </View>
           </View>
+
+          <View style={ptStyles.panelDivider} />
+
+          <View style={ptStyles.panelRow}>
+            <View style={[ptStyles.dot, { backgroundColor: trip.deboarded_at ? NY_RED : NY_GREY }]} />
+            <View style={{ flex: 1 }}>
+              <View style={ptStyles.panelRowTop}>
+                <Text style={ptStyles.panelLabel}>{trip.deboarded_at ? 'Deboarded' : 'Status'}</Text>
+                <Text style={ptStyles.panelTime}>
+                  {trip.deboarded_at ? formatTime(trip.deboarded_at) : 'Active'}
+                </Text>
+              </View>
+              <Text style={ptStyles.panelCoord}>
+                {trip.deboarded_at ? formatCoord(trip.deboard_lat, trip.deboard_lng) : '—'}
+              </Text>
+            </View>
+          </View>
+
+          {(trip.duration_secs != null || breadcrumbs.length > 0) && (
+            <>
+              <View style={ptStyles.panelDivider} />
+              <View style={ptStyles.statsRow}>
+                {trip.duration_secs != null && (
+                  <View style={ptStyles.chip}>
+                    <Text style={ptStyles.chipLabel}>Duration</Text>
+                    <Text style={ptStyles.chipValue}>{formatDuration(trip.duration_secs)}</Text>
+                  </View>
+                )}
+                {breadcrumbs.length > 0 && (
+                  <View style={ptStyles.chip}>
+                    <Text style={ptStyles.chipLabel}>Route pts</Text>
+                    <Text style={ptStyles.chipValue}>{breadcrumbs.length}</Text>
+                  </View>
+                )}
+              </View>
+            </>
+          )}
         </View>
       </SafeAreaView>
     </Modal>
@@ -383,15 +436,22 @@ const styles = StyleSheet.create({
 });
 
 const ptStyles = StyleSheet.create({
-  root:      { flex: 1, backgroundColor: '#fff' },
-  header:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#EEE' },
-  busId:     { fontSize: 17, fontWeight: '800', color: NY_DARK },
-  sub:       { fontSize: 12, color: NY_GREY, marginTop: 2 },
-  closeBtn:  { backgroundColor: NY_YELLOW, borderRadius: 8, paddingHorizontal: 14, paddingVertical: 6 },
-  closeTxt:  { fontWeight: '700', color: NY_DARK, fontSize: 14 },
-  legend:    { paddingHorizontal: 16, paddingVertical: 12, borderTopWidth: 1, borderTopColor: '#EEE' },
-  legendRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 4 },
-  dot:       { width: 10, height: 10, borderRadius: 5 },
-  line:      { width: 20, height: 3, backgroundColor: NY_YELLOW, borderRadius: 2 },
-  legendTxt: { fontSize: 12, color: NY_GREY, fontWeight: '600' },
+  root:         { flex: 1, backgroundColor: '#fff' },
+  header:       { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 14, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: '#EEE', backgroundColor: '#fff' },
+  busId:        { fontSize: 20, fontWeight: '800', color: NY_DARK, letterSpacing: 0.5 },
+  duration:     { fontSize: 13, color: NY_GREY, marginTop: 2, fontWeight: '500' },
+  closeBtn:     { backgroundColor: NY_YELLOW, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 8 },
+  closeTxt:     { fontWeight: '700', color: NY_DARK, fontSize: 14 },
+  panel:        { backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#EEE', paddingHorizontal: 16, paddingTop: 14, paddingBottom: 20 },
+  panelRow:     { flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 2 },
+  panelRowTop:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 },
+  panelLabel:   { fontSize: 13, fontWeight: '700', color: NY_DARK },
+  panelTime:    { fontSize: 13, fontWeight: '600', color: NY_DARK },
+  panelCoord:   { fontSize: 11, color: NY_GREY, fontFamily: 'monospace' },
+  panelDivider: { height: 1, backgroundColor: '#F0F0F0', marginVertical: 10 },
+  dot:          { width: 10, height: 10, borderRadius: 5, marginTop: 4 },
+  statsRow:     { flexDirection: 'row', gap: 10 },
+  chip:         { flex: 1, backgroundColor: '#F5F5F5', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 },
+  chipLabel:    { fontSize: 10, color: NY_GREY, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 },
+  chipValue:    { fontSize: 14, fontWeight: '800', color: NY_DARK },
 });
