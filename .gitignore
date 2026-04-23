@@ -44,3 +44,9 @@ android/.gradle/
 android/app/build/
 android/build/
 android/app/src/main/assets/index.android.bundle
+
+# local planning doc
+PLAN.md
+
+# android local config
+android/local.properties
