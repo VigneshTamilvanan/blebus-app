@@ -55,8 +55,8 @@ function Tab({ label, icon, active, onPress }: { label: string; icon: string; ac
 const styles = StyleSheet.create({
   root:      { flex: 1, backgroundColor: '#fff' },
   content:   { flex: 1 },
-  tabBar:    { flexDirection: 'row', borderTopWidth: 1, borderTopColor: '#EEEEEE', backgroundColor: '#fff', paddingBottom: 20 },
-  tab:       { flex: 1, alignItems: 'center', paddingVertical: 10, gap: 2 },
+  tabBar:    { flexDirection: 'row', borderTopWidth: 1, borderTopColor: '#EEEEEE', backgroundColor: '#fff', paddingBottom: 8, paddingTop: 4 },
+  tab:       { flex: 1, alignItems: 'center', paddingVertical: 8, gap: 2 },
   tabIcon:   { fontSize: 18, color: '#9E9E9E' },
   tabLabel:  { fontSize: 11, fontWeight: '600', color: '#9E9E9E' },
   tabActive: { color: '#FFD000' },
