@@ -1,14 +1,16 @@
-const TX_POWER_1M      = -80.0;  // calibrated: ESP32 +9dBm TX, measured -80 dBm at 1m
+const TX_POWER_1M      = -90.0;  // calibrated: ESP32-D0WD-V3 +9dBm TX, measured -90 dBm at 1m
 const PATH_LOSS_N      = 2.5;
 const BOARD_DISTANCE_M = 5.0;
 
 // ── Detection thresholds ──────────────────────────────────────────────────────
-const STRONG_THRESHOLD      = -96;  // avg RSSI must exceed this to be a candidate
+// Recalibrated for TX_POWER_1M=-90 (ESP32-D0WD-V3 PCB antenna):
+//   1m → -90 dBm | 2m → -97.5 | 3m → -102 | 4m → -105 | 6m → -109 | 8m → -113
+const STRONG_THRESHOLD      = -105; // avg RSSI must exceed this to be a candidate (~4m range)
 const STABILITY_SECONDS     = 6.0;  // candidate must be stable for this long to confirm
-const SWITCH_WEAK_THRESHOLD = -90;
+const SWITCH_WEAK_THRESHOLD = -98;
 const SWITCH_RIVAL_MARGIN   = 5;
 const SWITCH_RIVAL_SECONDS  = 5.0;
-const EXIT_RSSI_THRESHOLD   = -97;
+const EXIT_RSSI_THRESHOLD   = -109; // exit when signal drops below ~6m equivalent
 const EXIT_SECONDS          = 5.0;
 
 // ── Passing-bus / noisy-signal guards ────────────────────────────────────────
@@ -16,7 +18,8 @@ const EXIT_SECONDS          = 5.0;
 const PASSING_BUS_RECEDE_SECS = 4.0;
 // Maximum RSSI variance (dBm²) allowed when confirming. A moving beacon has high
 // variance; a stationary one (bus at stop, user inside) stays flat.
-const MAX_VARIANCE_TO_CONFIRM = 10.0;
+// Slightly relaxed from 10 → 15 because lower RSSI naturally has more noise.
+const MAX_VARIANCE_TO_CONFIRM = 15.0;
 
 // ── Trend / history ───────────────────────────────────────────────────────────
 const TREND_WINDOW   = 6;    // samples (~6s at 1 scan/s)
@@ -41,6 +44,7 @@ export interface DetectionResult {
   distanceM:     number;
   distanceScore: number;
   trend:         SignalTrend;
+  boardedAtMs:   number | null;  // epoch ms when boarding confirmed (Android native only)
 }
 
 // ── Math helpers ──────────────────────────────────────────────────────────────

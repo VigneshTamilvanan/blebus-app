@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Animated, Easing, Modal, Platform, SafeAreaView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Animated, Easing, Linking, Modal, Platform, SafeAreaView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { DetectionResult, DetectionState, ScanResult, SignalTrend } from '../ble/detection';
 import { Breadcrumb, Trip, fetchBreadcrumbs, fetchTrip } from '../db/database';
 import TripMap, { Coord } from '../components/TripMap';
@@ -109,6 +109,15 @@ function PulseRings({ color }: { color: string }) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+function formatElapsed(secs: number): string {
+  const h  = Math.floor(secs / 3600);
+  const m  = Math.floor((secs % 3600) / 60);
+  const s  = secs % 60;
+  const mm = String(m).padStart(2, '0');
+  const ss = String(s).padStart(2, '0');
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
 function formatTime(ms: number): string {
   return new Date(ms).toLocaleString('en-IN', {
     day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true,
@@ -211,9 +220,11 @@ interface Props {
   rawScans: ScanResult[];
   error: string | null;
   lastCompletedTripId: number | null;
+  btOn: boolean;
+  locationOn: boolean;
 }
 
-export default function HomeScreen({ result, rawScans, error, lastCompletedTripId }: Props) {
+export default function HomeScreen({ result, rawScans, error, lastCompletedTripId, btOn, locationOn }: Props) {
   const cfg    = STATE_CFG[result.state];
   const active = result.state === 'candidate' || result.state === 'confirmed';
 
@@ -245,6 +256,32 @@ export default function HomeScreen({ result, rawScans, error, lastCompletedTripI
     if (result.state === 'confirmed') setPostTripId(null);
   }, [result.state]);
 
+  // Boarding elapsed timer — uses boardedAtMs from native service so it survives app reopen
+  const boardedAtRef = useRef<number | null>(null);
+  const [elapsedSecs, setElapsedSecs] = useState(0);
+
+  useEffect(() => {
+    if (result.state === 'confirmed') {
+      if (boardedAtRef.current === null) {
+        boardedAtRef.current = result.boardedAtMs ?? Date.now();
+        setElapsedSecs(Math.floor((Date.now() - boardedAtRef.current) / 1000));
+      }
+    } else {
+      boardedAtRef.current = null;
+      setElapsedSecs(0);
+    }
+  }, [result.state, result.boardedAtMs]);
+
+  useEffect(() => {
+    if (result.state !== 'confirmed') return;
+    const id = setInterval(() => {
+      if (boardedAtRef.current !== null) {
+        setElapsedSecs(Math.floor((Date.now() - boardedAtRef.current) / 1000));
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [result.state]);
+
   // Badge bounce + flash on state change
   const badgeScale   = useRef(new Animated.Value(1)).current;
   const flashOpacity = useRef(new Animated.Value(0)).current;
@@ -261,11 +298,14 @@ export default function HomeScreen({ result, rawScans, error, lastCompletedTripI
 
   const bg = getBgColor(result.distanceScore, result.state);
 
+  const servicesOk = btOn && locationOn;
+
   return (
     <View style={[styles.root, { backgroundColor: bg }]}>
 
       {/* State-change colour flash */}
       <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: cfg.color, opacity: flashOpacity }]} pointerEvents="none" />
+
 
       {/* ── Scanning state: radar rings ── */}
       {result.state === 'scanning' && <RadarRings />}
@@ -285,6 +325,11 @@ export default function HomeScreen({ result, rawScans, error, lastCompletedTripI
       {/* ── State label ── */}
       <Text style={[styles.stateLabel, { color: cfg.color }]}>{cfg.label}</Text>
       <Text style={styles.stateSub}>{cfg.sub}</Text>
+
+      {/* ── Boarding timer ── */}
+      {result.state === 'confirmed' && (
+        <Text style={styles.boardingTimer}>{formatElapsed(elapsedSecs)}</Text>
+      )}
 
       {/* ── Bus ID ── */}
       {result.busId && (
@@ -337,6 +382,37 @@ export default function HomeScreen({ result, rawScans, error, lastCompletedTripI
         }
       </View>
 
+      {/* ── Services status banner — below debug panel, disappears when both on ── */}
+      {!servicesOk && (
+        <View style={styles.servicesBanner}>
+          <ServiceChip
+            label="Bluetooth"
+            on={btOn}
+            onPress={() => {
+              Linking.sendIntent('android.bluetooth.adapter.action.REQUEST_ENABLE').catch(() =>
+                Alert.alert('Bluetooth is off', 'Please enable Bluetooth to detect buses.', [
+                  { text: 'Open Settings', onPress: () => Linking.openSettings() },
+                ])
+              );
+            }}
+          />
+          <ServiceChip
+            label="Location"
+            on={locationOn}
+            onPress={() => {
+              Linking.sendIntent('android.settings.LOCATION_SOURCE_SETTINGS').catch(() =>
+                Linking.openSettings()
+              );
+            }}
+          />
+        </View>
+      )}
+
+      {/* ── Scan hint ── */}
+      {result.state === 'scanning' && (
+        <Text style={styles.scanHint}>Keep Bluetooth and Location ON for automatic bus detection</Text>
+      )}
+
       {error && <Text style={styles.error}>{error}</Text>}
 
       {/* ── Post-trip card ── */}
@@ -370,6 +446,20 @@ export default function HomeScreen({ result, rawScans, error, lastCompletedTripI
   );
 }
 
+function ServiceChip({ label, on, onPress }: { label: string; on: boolean; onPress: () => void }) {
+  return (
+    <TouchableOpacity
+      style={[styles.serviceChip, { borderColor: on ? NY_GREEN : NY_RED, backgroundColor: on ? '#E8F5E9' : '#FFEBEE' }]}
+      onPress={on ? undefined : onPress}
+      activeOpacity={on ? 1 : 0.7}
+    >
+      <Text style={{ fontSize: 13, color: on ? NY_GREEN : NY_RED }}>{on ? '✓' : '✕'}</Text>
+      <Text style={[styles.serviceChipLabel, { color: on ? NY_GREEN : NY_RED }]}>{label}</Text>
+      {!on && <Text style={{ fontSize: 10, color: NY_RED }}>Tap to fix</Text>}
+    </TouchableOpacity>
+  );
+}
+
 function Row({ label, value, last }: { label: string; value: string; last?: boolean }) {
   return (
     <View style={[styles.row, !last && styles.rowBorder]}>
@@ -399,7 +489,8 @@ const styles = StyleSheet.create({
 
   // Labels
   stateLabel:    { fontSize: 32, fontWeight: '800', letterSpacing: 0.3, marginBottom: 4 },
-  stateSub:      { fontSize: 14, color: NY_SUBTEXT, marginBottom: 20 },
+  stateSub:      { fontSize: 14, color: NY_SUBTEXT, marginBottom: 12 },
+  boardingTimer: { fontSize: 28, fontWeight: '200', color: NY_GREEN, fontFamily: 'monospace', letterSpacing: 3, marginBottom: 12 },
   busId:         { fontSize: 20, fontWeight: '700', color: NY_DARK, letterSpacing: 1.5, marginBottom: 12 },
 
   // Candidate progress
@@ -425,6 +516,14 @@ const styles = StyleSheet.create({
   debugRow:      { color: '#00FF88', fontFamily: 'monospace', fontSize: 11, paddingVertical: 1 },
 
   error:         { marginTop: 12, color: NY_RED, fontSize: 12 },
+
+  // Services banner
+  servicesBanner:   { flexDirection: 'row', gap: 10, paddingHorizontal: 16, paddingVertical: 10, backgroundColor: '#ffffffcc', borderRadius: 16, justifyContent: 'center' },
+  serviceChip:      { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1.5 },
+  serviceChipLabel: { fontSize: 12, fontWeight: '700' },
+
+  // Scan hint
+  scanHint:      { fontSize: 11, color: NY_SUBTEXT, textAlign: 'center', paddingHorizontal: 32 },
 
   // Post-trip card
   postTripCard:    { position: 'absolute', bottom: 16, left: 16, right: 16, flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 14, padding: 14, elevation: 4, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, gap: 8 },

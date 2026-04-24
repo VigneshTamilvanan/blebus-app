@@ -13,6 +13,7 @@
   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
   <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
   <uses-permission android:name="android.permission.VIBRATE"/>
+  <uses-permission android:name="android.permission.WAKE_LOCK"/>
   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
   <queries>
     <intent>
@@ -32,6 +33,12 @@
       android:exported="false"
       android:foregroundServiceType="connectedDevice"
       tools:node="merge"/>
+    <!-- Native BLE detection service — runs on its own HandlerThread, immune to JS-thread throttling -->
+    <service
+      android:name=".BLEDetectionService"
+      android:enabled="true"
+      android:exported="false"
+      android:foregroundServiceType="connectedDevice"/>
     <activity android:name=".MainActivity" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:theme="@style/Theme.App.SplashScreen" android:exported="true" android:screenOrientation="portrait">
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>

@@ -1,4 +1,4 @@
-import { DeviceEventEmitter } from 'react-native';
+import { DeviceEventEmitter, NativeModules, Platform } from 'react-native';
 import BackgroundActions from 'react-native-background-actions';
 import { BusDetectionEngine, DetectionResult, ScanResult } from '../ble/detection';
 import { startScan } from '../ble/scanner';
@@ -8,7 +8,7 @@ export const BLE_DETECTION_EVENT = 'ble_detection_update';
 
 export const IDLE: DetectionResult = {
   busId: null, state: 'scanning', confidence: 0,
-  rawRssi: 0, avgRssi: 0, distanceM: 0, distanceScore: 0, trend: 'stable',
+  rawRssi: 0, avgRssi: 0, distanceM: 0, distanceScore: 0, trend: 'stable', boardedAtMs: null,
 };
 
 export const BLE_TASK_OPTIONS = {
@@ -26,6 +26,10 @@ export async function bleTaskFn(taskDataArguments?: { customNames: string[] }): 
   // setupNotifications() in App.tsx only runs when the UI is mounted, which
   // doesn't happen in background — so we call it here too.
   await setupNotifications();
+
+  if (Platform.OS === 'android') {
+    NativeModules.WakeLock?.acquire();
+  }
 
   const customNames = taskDataArguments?.customNames ?? [];
   const engine      = new BusDetectionEngine();
@@ -70,11 +74,13 @@ export async function bleTaskFn(taskDataArguments?: { customNames: string[] }): 
     const keepAlive = setInterval(() => {
       if (!BackgroundActions.isRunning()) {
         clearInterval(keepAlive);
-        stop();
         resolve();
       }
     }, 5000);
   });
 
   stop();
+  if (Platform.OS === 'android') {
+    NativeModules.WakeLock?.release();
+  }
 }

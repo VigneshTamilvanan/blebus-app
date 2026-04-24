@@ -83,6 +83,15 @@ function promptEnableBluetooth(): void {
   }
 }
 
+export function monitorBluetooth(onStateChange: (on: boolean) => void): () => void {
+  const sub = manager.onStateChange((state) => {
+    const on = state === State.PoweredOn;
+    onStateChange(on);
+    if (state === State.PoweredOff) promptEnableBluetooth();
+  }, true);
+  return () => sub.remove();
+}
+
 export function startScan(
   onResults: (results: ScanResult[]) => void,
   onError: (err: Error) => void,
