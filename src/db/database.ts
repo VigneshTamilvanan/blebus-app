@@ -98,6 +98,15 @@ export async function fetchBreadcrumbs(tripId: number): Promise<Breadcrumb[]> {
   );
 }
 
+export async function findTripByBoardedAt(boardedAt: number): Promise<number | null> {
+  const d = await db();
+  const row = await d.getFirstAsync<{ id: number }>(
+    `SELECT id FROM trips WHERE boarded_at = ? AND deboarded_at IS NULL LIMIT 1`,
+    [boardedAt],
+  );
+  return row?.id ?? null;
+}
+
 export async function fetchTrip(tripId: number): Promise<Trip | null> {
   const d = await db();
   return d.getFirstAsync<Trip>(`SELECT * FROM trips WHERE id = ?`, [tripId]) ?? null;
