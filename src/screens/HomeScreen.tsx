@@ -227,9 +227,11 @@ interface Props {
   onSelectBus: (busId: string) => void;
   onConfirmDeboard: () => void;
   onCancelDeboard: () => void;
+  onConfirmSwitch: (busId: string) => void;
+  onDismissSwitch: () => void;
 }
 
-export default function HomeScreen({ result, rawScans, error, lastCompletedTripId, btOn, locationOn, onSelectBus, onConfirmDeboard, onCancelDeboard }: Props) {
+export default function HomeScreen({ result, rawScans, error, lastCompletedTripId, btOn, locationOn, onSelectBus, onConfirmDeboard, onCancelDeboard, onConfirmSwitch, onDismissSwitch }: Props) {
   const cfg    = STATE_CFG[result.state];
   const active = result.state === 'candidate' || result.state === 'confirmed';
 
@@ -451,6 +453,22 @@ export default function HomeScreen({ result, rawScans, error, lastCompletedTripI
         </View>
       )}
 
+      {/* ── Bus switch confirmation banner ── */}
+      {result.state === 'confirmed' && result.switchCandidate && (
+        <View style={styles.switchBanner}>
+          <Text style={styles.switchTitle}>Stronger bus detected</Text>
+          <Text style={styles.switchSub}>Switch to {result.switchCandidate}?</Text>
+          <View style={styles.switchBtns}>
+            <TouchableOpacity style={styles.switchYes} onPress={() => onConfirmSwitch(result.switchCandidate!)} activeOpacity={0.8}>
+              <Text style={styles.switchYesTxt}>Yes, switch</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.switchNo} onPress={onDismissSwitch} activeOpacity={0.8}>
+              <Text style={styles.switchNoTxt}>Stay on {result.busId}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {/* ── Post-trip card ── */}
       {postTripId !== null && (
         <View style={styles.postTripCard}>
@@ -578,6 +596,16 @@ const styles = StyleSheet.create({
   deboardYesTxt:    { fontSize: 14, fontWeight: '700', color: '#fff' },
   deboardNo:        { flex: 1, backgroundColor: '#F5F5F5', borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
   deboardNoTxt:     { fontSize: 14, fontWeight: '700', color: NY_DARK },
+
+  // Bus switch confirmation
+  switchBanner:     { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, paddingBottom: 32, elevation: 12, shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 12, shadowOffset: { width: 0, height: -4 } },
+  switchTitle:      { fontSize: 18, fontWeight: '800', color: NY_DARK, marginBottom: 4 },
+  switchSub:        { fontSize: 13, color: NY_SUBTEXT, marginBottom: 20 },
+  switchBtns:       { flexDirection: 'row', gap: 10 },
+  switchYes:        { flex: 1, backgroundColor: NY_YELLOW, borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
+  switchYesTxt:     { fontSize: 14, fontWeight: '700', color: NY_DARK },
+  switchNo:         { flex: 1, backgroundColor: '#F5F5F5', borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
+  switchNoTxt:      { fontSize: 14, fontWeight: '700', color: NY_DARK },
 
   // Post-trip card
   postTripCard:    { position: 'absolute', bottom: 16, left: 16, right: 16, flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 14, padding: 14, elevation: 4, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, gap: 8 },

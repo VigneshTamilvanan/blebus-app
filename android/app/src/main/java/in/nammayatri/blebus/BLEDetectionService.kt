@@ -33,6 +33,8 @@ class BLEDetectionService : Service() {
         @Volatile var onSelectBus: ((String) -> Unit)? = null
         @Volatile var onConfirmDeboard: (() -> Unit)? = null
         @Volatile var onCancelDeboard: (() -> Unit)? = null
+        @Volatile var onConfirmSwitch: ((String) -> Unit)? = null
+        @Volatile var onDismissSwitch: (() -> Unit)? = null
 
         private const val COMPANY_ID       = 0xFFFF
         private const val TX_POWER_1M      = -90.0  // ESP32-D0WD-V3 +9dBm, measured -90 at 1m
@@ -46,10 +48,13 @@ class BLEDetectionService : Service() {
         private const val ROLLING_WINDOW   = 5
         private const val TREND_WINDOW     = 6
         private const val TREND_SLOPE_DB   = 0.4
-        private const val PASSING_BUS_MS      = 4_000L
-        private const val MAX_VARIANCE       = 15.0   // relaxed: lower RSSI = noisier readings
-        private const val AMBIGUOUS_MARGIN   = 8.0    // dBm — two buses within this = ask user
-        private const val PENDING_DEBOARD_MS = 30_000L // auto-deboard after 30s if no response
+        private const val PASSING_BUS_MS        = 4_000L
+        private const val MAX_VARIANCE         = 15.0   // relaxed: lower RSSI = noisier readings
+        private const val AMBIGUOUS_MARGIN     = 8.0    // dBm — two buses within this = ask user
+        private const val PENDING_DEBOARD_MS   = 30_000L // auto-deboard after 30s if no response
+        private const val SWITCH_WEAK_THRESHOLD = -98.0  // confirmed signal must be below this to consider switching
+        private const val SWITCH_RIVAL_MARGIN   = 5.0    // rival must be this much stronger (dBm)
+        private const val SWITCH_RIVAL_MS       = 5_000L // rival must sustain advantage for this long
         private const val NOTIF_CHANNEL    = "ble-detection"
         private const val FG_NOTIF_ID      = 42
         private const val BOARD_NOTIF_ID   = 43
@@ -69,12 +74,15 @@ class BLEDetectionService : Service() {
         val rssiHistory = mutableListOf<Double>()
     }
 
-    private var state                  = State.SCANNING
-    private var confirmedBus: String?  = null
-    private var lostSince: Long?       = null
-    private var boardedAtMs: Long?     = null
+    private var state                   = State.SCANNING
+    private var confirmedBus: String?   = null
+    private var lostSince: Long?        = null
+    private var boardedAtMs: Long?      = null
     private var pendingDeboardSince: Long? = null
     private var ambiguousCandidates: List<String> = emptyList()
+    private var rivalSince: Long?       = null
+    private var rivalId: String?        = null
+    private var switchDismissedAt: Long?= null  // cooldown after user dismisses a switch prompt
     private val tracks                 = mutableMapOf<String, BeaconTrack>()
     private val confirmedHistory       = mutableListOf<Double>()
     private var lastNotifiedState      = "scanning"
@@ -134,6 +142,8 @@ class BLEDetectionService : Service() {
             onSelectBus      = { busId -> handler.post { doSelectBus(busId) } }
             onConfirmDeboard = { handler.post { doConfirmDeboard() } }
             onCancelDeboard  = { handler.post { doCancelDeboard() } }
+            onConfirmSwitch  = { busId -> handler.post { doConfirmSwitch(busId) } }
+            onDismissSwitch  = { handler.post { doDismissSwitch() } }
             startBLEScan()
             handler.post(tickRunnable)
         }
@@ -185,6 +195,7 @@ class BLEDetectionService : Service() {
 
     override fun onDestroy() {
         onSelectBus = null; onConfirmDeboard = null; onCancelDeboard = null
+        onConfirmSwitch = null; onDismissSwitch = null
         handler.removeCallbacksAndMessages(null)
         try {
             (getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager)
@@ -393,7 +404,27 @@ class BLEDetectionService : Service() {
         val dist   = rssiToDistance(cur.avgRssi)
         val dscore = distanceToScore(dist)
         val conf   = confidence(dscore, STABILITY_MS)
-        return detection(confirmed, "confirmed", conf, cur.rawRssi, cur.avgRssi, dist, dscore, trend)
+
+        // ── Bus-switch candidate detection ────────────────────────────────────
+        // If a rival bus is significantly stronger and the current signal is
+        // weak, prompt the user — don't auto-switch.
+        val rival = scans.filter { it.busId != confirmed && it.isBus }
+            .maxByOrNull { it.avgRssi }
+        val cooldownActive = switchDismissedAt != null && now - switchDismissedAt!! < 30_000L
+        var switchCandidate: String? = null
+
+        if (!cooldownActive && cur.avgRssi < SWITCH_WEAK_THRESHOLD && rival != null
+            && (rival.avgRssi - cur.avgRssi) >= SWITCH_RIVAL_MARGIN) {
+            if (rivalId != rival.busId) { rivalId = rival.busId; rivalSince = now }
+            if (rivalSince != null && now - rivalSince!! >= SWITCH_RIVAL_MS) {
+                switchCandidate = rival.busId   // show the prompt, don't auto-switch
+            }
+        } else if (rival == null || cur.avgRssi >= SWITCH_WEAK_THRESHOLD) {
+            rivalId = null; rivalSince = null   // rival gone or current is strong again
+        }
+
+        return detection(confirmed, "confirmed", conf, cur.rawRssi, cur.avgRssi, dist, dscore, trend,
+            switchCandidate = switchCandidate)
     }
 
     private fun handleAmbiguous(scans: List<BeaconData>, now: Long): Map<String, Any?> {
@@ -462,6 +493,21 @@ class BLEDetectionService : Service() {
         state = State.CONFIRMED; pendingDeboardSince = null; lostSince = null
     }
 
+    private fun doConfirmSwitch(busId: String) {
+        if (state != State.CONFIRMED || rivalId != busId) return
+        confirmedBus = busId
+        boardedAtMs  = System.currentTimeMillis()
+        confirmedHistory.clear()
+        rivalId = null; rivalSince = null; switchDismissedAt = null
+        lostSince = null
+        persistState()
+    }
+
+    private fun doDismissSwitch() {
+        rivalId = null; rivalSince = null
+        switchDismissedAt = SystemClock.elapsedRealtime()
+    }
+
     private fun handleLost(scans: List<BeaconData>, now: Long): Map<String, Any?> {
         clearPersistedState()
         tracks.clear(); confirmedHistory.clear(); lostSince = null
@@ -475,12 +521,14 @@ class BLEDetectionService : Service() {
         busId: String?, state: String, confidence: Double,
         rawRssi: Int, avgRssi: Double, distanceM: Double,
         distanceScore: Double, trend: String,
-        candidates: List<String> = emptyList()
+        candidates: List<String> = emptyList(),
+        switchCandidate: String? = null
     ): Map<String, Any?> = mapOf(
         "busId" to busId, "state" to state, "confidence" to confidence,
         "rawRssi" to rawRssi, "avgRssi" to avgRssi,
         "distanceM" to distanceM, "distanceScore" to distanceScore, "trend" to trend,
-        "boardedAtMs" to boardedAtMs, "candidates" to candidates
+        "boardedAtMs" to boardedAtMs, "candidates" to candidates,
+        "switchCandidate" to switchCandidate
     )
 
     // ── Math helpers ──────────────────────────────────────────────────────────

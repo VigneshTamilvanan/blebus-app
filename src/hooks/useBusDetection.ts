@@ -86,6 +86,12 @@ export function useBusDetection() {
   const cancelDeboard = () => {
     if (Platform.OS === 'android') NativeModules.BLEDetection.cancelDeboard();
   };
+  const confirmSwitch = (busId: string) => {
+    if (Platform.OS === 'android') NativeModules.BLEDetection.confirmSwitch(busId);
+  };
+  const dismissSwitch = () => {
+    if (Platform.OS === 'android') NativeModules.BLEDetection.dismissSwitch();
+  };
 
   const restartScan = async () => {
     await stopService();
@@ -141,5 +147,5 @@ export function useBusDetection() {
     };
   }, []);
 
-  return { result, rawScans, error, btOn, locationOn, selectBus, confirmDeboard, cancelDeboard, restartScan };
+  return { result, rawScans, error, btOn, locationOn, selectBus, confirmDeboard, cancelDeboard, confirmSwitch, dismissSwitch, restartScan };
 }

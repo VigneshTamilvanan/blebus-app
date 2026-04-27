@@ -68,6 +68,12 @@ class BLEModule(ctx: ReactApplicationContext) : ReactContextBaseJavaModule(ctx) 
     @ReactMethod
     fun cancelDeboard() { BLEDetectionService.onCancelDeboard?.invoke() }
 
+    @ReactMethod
+    fun confirmSwitch(busId: String) { BLEDetectionService.onConfirmSwitch?.invoke(busId) }
+
+    @ReactMethod
+    fun dismissSwitch() { BLEDetectionService.onDismissSwitch?.invoke() }
+
     // Required by RN event emitter infrastructure
     @ReactMethod fun addListener(eventName: String) {}
     @ReactMethod fun removeListeners(count: Double) {}
@@ -93,6 +99,8 @@ class BLEModule(ctx: ReactApplicationContext) : ReactContextBaseJavaModule(ctx) 
             val cands = Arguments.createArray()
             (result["candidates"] as? List<*>)?.forEach { cands.pushString(it as? String ?: "") }
             putArray("candidates", cands)
+            val sc = result["switchCandidate"] as? String
+            if (sc != null) putString("switchCandidate", sc) else putNull("switchCandidate")
         }
 
         val scansArray = Arguments.createArray()

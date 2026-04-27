@@ -20,7 +20,7 @@ export default function App() {
     promptBatteryOptimizationIfNeeded();
   }, []);
 
-  const { result, rawScans, error, btOn, locationOn, selectBus, confirmDeboard, cancelDeboard, restartScan } = useBusDetection();
+  const { result, rawScans, error, btOn, locationOn, selectBus, confirmDeboard, cancelDeboard, confirmSwitch, dismissSwitch, restartScan } = useBusDetection();
   const locationRef = useLocation();
   const { lastCompletedTripId } = useTripLogger(result, locationRef);
 
@@ -29,7 +29,7 @@ export default function App() {
       <StatusBar style="dark" />
 
       <View style={styles.content}>
-        {tab === 'home'     && <HomeScreen result={result} rawScans={rawScans} error={error} lastCompletedTripId={lastCompletedTripId} btOn={btOn} locationOn={locationOn} onSelectBus={selectBus} onConfirmDeboard={confirmDeboard} onCancelDeboard={cancelDeboard} />}
+        {tab === 'home'     && <HomeScreen result={result} rawScans={rawScans} error={error} lastCompletedTripId={lastCompletedTripId} btOn={btOn} locationOn={locationOn} onSelectBus={selectBus} onConfirmDeboard={confirmDeboard} onCancelDeboard={cancelDeboard} onConfirmSwitch={confirmSwitch} onDismissSwitch={dismissSwitch} />}
         {tab === 'history'  && <HistoryScreen />}
         {tab === 'settings' && <SettingsScreen onSave={restartScan} />}
       </View>
