@@ -546,30 +546,29 @@ class BLEDetectionService : Service() {
                 .setSmallIcon(icon).setAutoCancel(true).build()
 
         when {
-            prev == "scanning" && next == "candidate" && busId != null ->
-                nm.notify(BOARD_NOTIF_ID, build("Bus detected nearby", "Verifying $busId — hold on…"))
+            // Ambiguous: one-shot notification so user knows to open the app.
+            // Guarded by prev so it fires only on the transition, not every tick.
+            prev != "ambiguous" && next == "ambiguous" ->
+                nm.notify(BOARD_NOTIF_ID, build("Multiple buses detected", "Open app to select your bus"))
 
-            next == "ambiguous" ->
-                nm.notify(BOARD_NOTIF_ID, build("Multiple buses detected", "Open the app to select your bus"))
-
-            prev == "candidate" && next == "scanning" ->
-                nm.cancel(BOARD_NOTIF_ID)
-
+            // Boarding confirmed — single notification, cancels any stale ones.
             prev != "confirmed" && next == "confirmed" && busId != null -> {
                 nm.cancel(BOARD_NOTIF_ID)
                 nm.notify(BOARD_NOTIF_ID, build("Boarded", "You are on $busId"))
             }
 
-            next == "pendingDeboard" && busId != null ->
-                nm.notify(DEBOARD_NOTIF_ID, build("Did you deboard?", "Tap to confirm you left $busId"))
+            // Signal lost — ask user to confirm; fires once on transition.
+            prev != "pendingDeboard" && next == "pendingDeboard" && busId != null ->
+                nm.notify(DEBOARD_NOTIF_ID, build("Did you deboard?", "Open app to confirm — $busId"))
 
-            prev == "pendingDeboard" && next == "confirmed" ->
-                nm.cancel(DEBOARD_NOTIF_ID)
-
-            next == "lost" && busId != null -> {
+            // Deboarded confirmed.
+            prev != "lost" && next == "lost" && busId != null -> {
                 nm.cancel(DEBOARD_NOTIF_ID)
                 nm.notify(DEBOARD_NOTIF_ID, build("Deboarded", "You have left $busId"))
             }
+
+            // Back to scanning (e.g. pendingDeboard cancelled) — clear stale notifications.
+            next == "scanning" -> { nm.cancel(BOARD_NOTIF_ID); nm.cancel(DEBOARD_NOTIF_ID) }
         }
     }
 }
