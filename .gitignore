@@ -47,6 +47,7 @@ android/app/src/main/assets/index.android.bundle
 
 # local planning doc
 PLAN.md
+CLAUDE.md
 
 # android local config
 android/local.properties
