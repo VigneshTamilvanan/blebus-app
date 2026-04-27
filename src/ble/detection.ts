@@ -25,7 +25,7 @@ const MAX_VARIANCE_TO_CONFIRM = 15.0;
 const TREND_WINDOW   = 6;    // samples (~6s at 1 scan/s)
 const TREND_SLOPE_DB = 0.4;  // dBm/s needed to register approaching/receding
 
-export type DetectionState = 'scanning' | 'candidate' | 'confirmed' | 'lost';
+export type DetectionState = 'scanning' | 'candidate' | 'ambiguous' | 'confirmed' | 'pendingDeboard' | 'lost';
 export type SignalTrend    = 'approaching' | 'receding' | 'stable';
 
 export interface ScanResult {
@@ -45,6 +45,7 @@ export interface DetectionResult {
   distanceScore: number;
   trend:         SignalTrend;
   boardedAtMs:   number | null;  // epoch ms when boarding confirmed (Android native only)
+  candidates:    string[];       // populated when state === 'ambiguous'
 }
 
 // ── Math helpers ──────────────────────────────────────────────────────────────

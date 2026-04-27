@@ -59,6 +59,15 @@ class BLEModule(ctx: ReactApplicationContext) : ReactContextBaseJavaModule(ctx) 
         )
     }
 
+    @ReactMethod
+    fun selectBus(busId: String) { BLEDetectionService.onSelectBus?.invoke(busId) }
+
+    @ReactMethod
+    fun confirmDeboard() { BLEDetectionService.onConfirmDeboard?.invoke() }
+
+    @ReactMethod
+    fun cancelDeboard() { BLEDetectionService.onCancelDeboard?.invoke() }
+
     // Required by RN event emitter infrastructure
     @ReactMethod fun addListener(eventName: String) {}
     @ReactMethod fun removeListeners(count: Double) {}
@@ -81,6 +90,9 @@ class BLEModule(ctx: ReactApplicationContext) : ReactContextBaseJavaModule(ctx) 
             putDouble("distanceScore", (result["distanceScore"] as? Number)?.toDouble() ?: 0.0)
             val bms = (result["boardedAtMs"] as? Number)?.toDouble()
             if (bms != null) putDouble("boardedAtMs", bms) else putNull("boardedAtMs")
+            val cands = Arguments.createArray()
+            (result["candidates"] as? List<*>)?.forEach { cands.pushString(it as? String ?: "") }
+            putArray("candidates", cands)
         }
 
         val scansArray = Arguments.createArray()

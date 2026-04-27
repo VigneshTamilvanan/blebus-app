@@ -77,6 +77,16 @@ export function useBusDetection() {
   const [locationOn, setLocationOn] = useState(true);
   const appState                  = useRef<AppStateStatus>(AppState.currentState);
 
+  const selectBus = (busId: string) => {
+    if (Platform.OS === 'android') NativeModules.BLEDetection.selectBus(busId);
+  };
+  const confirmDeboard = () => {
+    if (Platform.OS === 'android') NativeModules.BLEDetection.confirmDeboard();
+  };
+  const cancelDeboard = () => {
+    if (Platform.OS === 'android') NativeModules.BLEDetection.cancelDeboard();
+  };
+
   const restartScan = async () => {
     await stopService();
     setResult(IDLE);
@@ -131,5 +141,5 @@ export function useBusDetection() {
     };
   }, []);
 
-  return { result, rawScans, error, btOn, locationOn, restartScan };
+  return { result, rawScans, error, btOn, locationOn, selectBus, confirmDeboard, cancelDeboard, restartScan };
 }

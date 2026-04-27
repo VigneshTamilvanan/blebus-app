@@ -8,7 +8,7 @@ export const BLE_DETECTION_EVENT = 'ble_detection_update';
 
 export const IDLE: DetectionResult = {
   busId: null, state: 'scanning', confidence: 0,
-  rawRssi: 0, avgRssi: 0, distanceM: 0, distanceScore: 0, trend: 'stable', boardedAtMs: null,
+  rawRssi: 0, avgRssi: 0, distanceM: 0, distanceScore: 0, trend: 'stable', boardedAtMs: null, candidates: [],
 };
 
 export const BLE_TASK_OPTIONS = {

@@ -13,10 +13,12 @@ const NY_DARK    = '#212121';
 const NY_SUBTEXT = '#757575';
 
 const STATE_CFG: Record<DetectionState, { label: string; sub: string; color: string }> = {
-  scanning:  { label: 'Scanning',   sub: 'Looking for nearby buses',  color: NY_GREY   },
-  candidate: { label: 'Detecting',  sub: 'Hold still — verifying…',   color: NY_YELLOW },
-  confirmed: { label: 'Boarded',    sub: 'You are on the bus',         color: NY_GREEN  },
-  lost:      { label: 'Deboarded',  sub: 'You have left the bus',      color: NY_RED    },
+  scanning:       { label: 'Scanning',         sub: 'Looking for nearby buses',         color: NY_GREY   },
+  candidate:      { label: 'Detecting',        sub: 'Hold still — verifying…',          color: NY_YELLOW },
+  ambiguous:      { label: 'Multiple Buses',   sub: 'Select the bus you are boarding',  color: NY_YELLOW },
+  confirmed:      { label: 'Boarded',          sub: 'You are on the bus',               color: NY_GREEN  },
+  pendingDeboard: { label: 'Did you deboard?', sub: 'Confirm if you have left the bus', color: NY_RED    },
+  lost:           { label: 'Deboarded',        sub: 'You have left the bus',            color: NY_RED    },
 };
 
 const TREND_CFG: Record<SignalTrend, { symbol: string; label: string; color: string }> = {
@@ -222,9 +224,12 @@ interface Props {
   lastCompletedTripId: number | null;
   btOn: boolean;
   locationOn: boolean;
+  onSelectBus: (busId: string) => void;
+  onConfirmDeboard: () => void;
+  onCancelDeboard: () => void;
 }
 
-export default function HomeScreen({ result, rawScans, error, lastCompletedTripId, btOn, locationOn }: Props) {
+export default function HomeScreen({ result, rawScans, error, lastCompletedTripId, btOn, locationOn, onSelectBus, onConfirmDeboard, onCancelDeboard }: Props) {
   const cfg    = STATE_CFG[result.state];
   const active = result.state === 'candidate' || result.state === 'confirmed';
 
@@ -415,6 +420,37 @@ export default function HomeScreen({ result, rawScans, error, lastCompletedTripI
 
       {error && <Text style={styles.error}>{error}</Text>}
 
+      {/* ── Ambiguous: bus selection sheet ── */}
+      {result.state === 'ambiguous' && result.candidates.length > 0 && (
+        <View style={styles.ambiguousSheet}>
+          <Text style={styles.ambiguousTitle}>Multiple buses detected</Text>
+          <Text style={styles.ambiguousSub}>Which bus are you boarding?</Text>
+          <View style={styles.ambiguousBtns}>
+            {result.candidates.map(busId => (
+              <TouchableOpacity key={busId} style={styles.ambiguousBtn} onPress={() => onSelectBus(busId)} activeOpacity={0.8}>
+                <Text style={styles.ambiguousBtnTxt}>{busId}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+      )}
+
+      {/* ── Pending deboard: confirmation banner ── */}
+      {result.state === 'pendingDeboard' && result.busId && (
+        <View style={styles.deboardBanner}>
+          <Text style={styles.deboardTitle}>Did you leave {result.busId}?</Text>
+          <Text style={styles.deboardSub}>Signal lost — confirm if you deboarded</Text>
+          <View style={styles.deboardBtns}>
+            <TouchableOpacity style={styles.deboardYes} onPress={onConfirmDeboard} activeOpacity={0.8}>
+              <Text style={styles.deboardYesTxt}>Yes, I deboarded</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.deboardNo} onPress={onCancelDeboard} activeOpacity={0.8}>
+              <Text style={styles.deboardNoTxt}>No, still on bus</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {/* ── Post-trip card ── */}
       {postTripId !== null && (
         <View style={styles.postTripCard}>
@@ -524,6 +560,24 @@ const styles = StyleSheet.create({
 
   // Scan hint
   scanHint:      { fontSize: 11, color: NY_SUBTEXT, textAlign: 'center', paddingHorizontal: 32 },
+
+  // Ambiguous bus selection
+  ambiguousSheet:   { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, paddingBottom: 32, elevation: 12, shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 12, shadowOffset: { width: 0, height: -4 } },
+  ambiguousTitle:   { fontSize: 18, fontWeight: '800', color: NY_DARK, marginBottom: 4 },
+  ambiguousSub:     { fontSize: 13, color: NY_SUBTEXT, marginBottom: 20 },
+  ambiguousBtns:    { gap: 10 },
+  ambiguousBtn:     { backgroundColor: NY_YELLOW, borderRadius: 14, paddingVertical: 16, alignItems: 'center' },
+  ambiguousBtnTxt:  { fontSize: 16, fontWeight: '800', color: NY_DARK, letterSpacing: 1 },
+
+  // Pending deboard confirmation
+  deboardBanner:    { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, paddingBottom: 32, elevation: 12, shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 12, shadowOffset: { width: 0, height: -4 } },
+  deboardTitle:     { fontSize: 18, fontWeight: '800', color: NY_DARK, marginBottom: 4 },
+  deboardSub:       { fontSize: 13, color: NY_SUBTEXT, marginBottom: 20 },
+  deboardBtns:      { flexDirection: 'row', gap: 10 },
+  deboardYes:       { flex: 1, backgroundColor: NY_RED, borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
+  deboardYesTxt:    { fontSize: 14, fontWeight: '700', color: '#fff' },
+  deboardNo:        { flex: 1, backgroundColor: '#F5F5F5', borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
+  deboardNoTxt:     { fontSize: 14, fontWeight: '700', color: NY_DARK },
 
   // Post-trip card
   postTripCard:    { position: 'absolute', bottom: 16, left: 16, right: 16, flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 14, padding: 14, elevation: 4, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, gap: 8 },
