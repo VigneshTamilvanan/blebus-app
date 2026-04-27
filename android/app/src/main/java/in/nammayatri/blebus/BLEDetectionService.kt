@@ -50,7 +50,10 @@ class BLEDetectionService : Service() {
         private const val TREND_SLOPE_DB   = 0.4
         private const val PASSING_BUS_MS        = 4_000L
         private const val MAX_VARIANCE         = 15.0   // relaxed: lower RSSI = noisier readings
-        private const val AMBIGUOUS_MARGIN     = 8.0    // dBm — two buses within this = ask user
+        private const val AMBIGUOUS_MARGIN       = 8.0    // dBm — two buses within this RSSI gap = ask user
+        private const val AMBIGUOUS_STABILITY_MS = 3_000L  // second bus needs this long to trigger ambiguous (shorter than STABILITY_MS)
+        private const val AMBIGUOUS_SIGNAL_FLOOR = -110.0  // weaker floor for second bus in ambiguous check
+        private const val AMBIGUOUS_DISTANCE_M   = 3.0     // if both buses within this distance, ask user regardless of RSSI gap
         private const val PENDING_DEBOARD_MS   = 30_000L // auto-deboard after 30s if no response
         private const val SWITCH_WEAK_THRESHOLD = -98.0  // confirmed signal must be below this to consider switching
         private const val SWITCH_RIVAL_MARGIN   = 5.0    // rival must be this much stronger (dBm)
@@ -347,12 +350,17 @@ class BLEDetectionService : Service() {
         val conf    = confidence(dscore, elapsed)
 
         if (elapsed >= STABILITY_MS) {
-            // Check for ambiguous: second bus also stable and within AMBIGUOUS_MARGIN
+            // Ambiguous check: second bus tracked long enough and either
+            //   (a) RSSI within AMBIGUOUS_MARGIN, or (b) both physically within AMBIGUOUS_DISTANCE_M
             if (surviving.size >= 2) {
-                val second = surviving[1]
+                val second        = surviving[1]
                 val secondElapsed = now - (tracks[second.busId]?.firstSeen ?: now)
-                if (secondElapsed >= STABILITY_MS &&
-                    Math.abs(best.avgRssi - second.avgRssi) <= AMBIGUOUS_MARGIN) {
+                val secondDist    = rssiToDistance(second.avgRssi)
+                val closeRssi     = Math.abs(best.avgRssi - second.avgRssi) <= AMBIGUOUS_MARGIN
+                val bothNear      = dist <= AMBIGUOUS_DISTANCE_M && secondDist <= AMBIGUOUS_DISTANCE_M
+                if (secondElapsed >= AMBIGUOUS_STABILITY_MS
+                    && second.avgRssi > AMBIGUOUS_SIGNAL_FLOOR
+                    && (closeRssi || bothNear)) {
                     state = State.AMBIGUOUS
                     ambiguousCandidates = listOf(best.busId, second.busId)
                     return detection(null, "ambiguous", 0.0, 0, 0.0, 0.0, 0.0, "stable", ambiguousCandidates)
@@ -429,7 +437,7 @@ class BLEDetectionService : Service() {
 
     private fun handleAmbiguous(scans: List<BeaconData>, now: Long): Map<String, Any?> {
         val visible = ambiguousCandidates.filter { id ->
-            scans.any { it.busId == id && it.avgRssi > STRONG_THRESHOLD }
+            scans.any { it.busId == id && it.avgRssi > AMBIGUOUS_SIGNAL_FLOOR }
         }
         if (visible.isEmpty()) {
             ambiguousCandidates = emptyList(); state = State.SCANNING; return idle()
