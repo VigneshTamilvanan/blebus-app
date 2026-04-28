@@ -383,7 +383,7 @@ export default function HomeScreen({ result, rawScans, error, lastCompletedTripI
           ? <Text style={styles.debugRow}>No NY-BUS beacons in range</Text>
           : rawScans.map(s => (
               <Text key={s.busId} style={styles.debugRow}>
-                {s.busId}{'  '}avg {s.avgRssi.toFixed(1)} dBm{'  '}~{s.distanceM.toFixed(1)} m{'  '}raw {s.rawRssi} dBm
+                {s.busId}{'  '}avg {s.avgRssi.toFixed(1)} dBm{'  '}~{(s.distanceM ?? 0).toFixed(1)} m{'  '}raw {s.rawRssi} dBm
               </Text>
             ))
         }
