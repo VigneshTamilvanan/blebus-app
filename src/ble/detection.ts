@@ -45,9 +45,14 @@ export interface DetectionResult {
   distanceM:     number;
   distanceScore: number;
   trend:         SignalTrend;
-  boardedAtMs:      number | null;  // epoch ms when boarding confirmed (Android native only)
-  candidates:       string[];       // populated when state === 'ambiguous'
-  switchCandidate:  string | null;  // rival bus that has been stronger for SWITCH_RIVAL_SECONDS
+  boardedAtMs:        number | null;
+  candidates:         string[];
+  switchCandidate:    string | null;
+  lastBeaconSeenMs:   number | null;  // epoch ms of last tick the confirmed beacon was healthy
+  lastBeaconSeenLat:  number | null;  // GPS at that moment (used as deboard location after sleep)
+  lastBeaconSeenLng:  number | null;
+  lat:                number | null;  // latest GPS from native FusedLocationProviderClient
+  lng:                number | null;
 }
 
 // ── Math helpers ──────────────────────────────────────────────────────────────

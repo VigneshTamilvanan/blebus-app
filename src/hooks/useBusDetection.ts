@@ -40,7 +40,6 @@ async function stopService(): Promise<void> {
 async function checkLocationServices(): Promise<boolean> {
   if (Platform.OS !== 'android') return true;
 
-  // First ensure we have the permission — this shows the system permission dialog if needed.
   const { status } = await ExpoLocation.requestForegroundPermissionsAsync();
   if (status !== 'granted') {
     Alert.alert(
@@ -52,6 +51,22 @@ async function checkLocationServices(): Promise<boolean> {
       ],
     );
     return false;
+  }
+
+  // Request "Allow all the time" — needed for GPS updates while the screen is locked.
+  // Without this, FusedLocationProviderClient won't deliver fixes in the background.
+  const { status: bgStatus } = await ExpoLocation.requestBackgroundPermissionsAsync();
+  if (bgStatus !== 'granted') {
+    Alert.alert(
+      'Background location needed',
+      'To record your route and deboard location accurately while the screen is locked, ' +
+      'please set Location to "Allow all the time" in Settings.',
+      [
+        { text: 'Later', style: 'cancel' },
+        { text: 'Open Settings', onPress: () => Linking.openSettings() },
+      ],
+    );
+    // Don't return false — the app works without it, just with less accurate deboard coords.
   }
 
   // Then check if the device's Location Services toggle is on.

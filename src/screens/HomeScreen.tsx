@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Animated, Easing, Linking, Modal, Platform, SafeAreaView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Animated, Easing, Linking, Modal, Platform, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { DetectionResult, DetectionState, ScanResult, SignalTrend } from '../ble/detection';
 import { Breadcrumb, Trip, fetchBreadcrumbs, fetchTrip } from '../db/database';
 import TripMap, { Coord } from '../components/TripMap';
@@ -263,6 +263,14 @@ export default function HomeScreen({ result, rawScans, error, lastCompletedTripI
     if (result.state === 'confirmed') setPostTripId(null);
   }, [result.state]);
 
+  // Track last confirmed bus to detect re-confirmation scenario in ambiguous state
+  const lastConfirmedBusRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (result.state === 'confirmed' && result.busId) {
+      lastConfirmedBusRef.current = result.busId;
+    }
+  }, [result.state, result.busId]);
+
   // Boarding elapsed timer — uses boardedAtMs from native service so it survives app reopen
   const boardedAtRef = useRef<number | null>(null);
   const [elapsedSecs, setElapsedSecs] = useState(0);
@@ -423,19 +431,42 @@ export default function HomeScreen({ result, rawScans, error, lastCompletedTripI
       {error && <Text style={styles.error}>{error}</Text>}
 
       {/* ── Ambiguous: bus selection sheet ── */}
-      {result.state === 'ambiguous' && result.candidates.length > 0 && (
-        <View style={styles.ambiguousSheet}>
-          <Text style={styles.ambiguousTitle}>Multiple buses detected</Text>
-          <Text style={styles.ambiguousSub}>Which bus are you boarding?</Text>
-          <View style={styles.ambiguousBtns}>
-            {result.candidates.map(busId => (
-              <TouchableOpacity key={busId} style={styles.ambiguousBtn} onPress={() => onSelectBus(busId)} activeOpacity={0.8}>
-                <Text style={styles.ambiguousBtnTxt}>{busId}</Text>
-              </TouchableOpacity>
-            ))}
+      {result.state === 'ambiguous' && result.candidates.length > 0 && (() => {
+        const prevBus = lastConfirmedBusRef.current;
+        const isReconfirm = prevBus !== null && result.candidates.includes(prevBus);
+        const newBus = isReconfirm ? result.candidates.find(b => b !== prevBus) ?? null : null;
+        return (
+          <View style={[styles.ambiguousSheet, postTripId !== null && { bottom: 90 }]}>
+            <Text style={styles.ambiguousTitle}>Multiple buses detected</Text>
+            {isReconfirm
+              ? <Text style={styles.ambiguousSub}>
+                  You're on {prevBus}{newBus ? ` — ${newBus} is also nearby` : ''}. Still on {prevBus}?
+                </Text>
+              : <Text style={styles.ambiguousSub}>Which bus are you boarding?</Text>
+            }
+            <View style={styles.ambiguousBtns}>
+              {isReconfirm ? (
+                <>
+                  <TouchableOpacity style={styles.ambiguousBtn} onPress={() => onSelectBus(prevBus!)} activeOpacity={0.8}>
+                    <Text style={styles.ambiguousBtnTxt}>Yes, still on {prevBus}</Text>
+                  </TouchableOpacity>
+                  {newBus && (
+                    <TouchableOpacity style={[styles.ambiguousBtn, { backgroundColor: '#F0F0F0' }]} onPress={() => onSelectBus(newBus)} activeOpacity={0.8}>
+                      <Text style={[styles.ambiguousBtnTxt, { color: NY_DARK }]}>No, switched to {newBus}</Text>
+                    </TouchableOpacity>
+                  )}
+                </>
+              ) : (
+                result.candidates.map(busId => (
+                  <TouchableOpacity key={busId} style={styles.ambiguousBtn} onPress={() => onSelectBus(busId)} activeOpacity={0.8}>
+                    <Text style={styles.ambiguousBtnTxt}>{busId}</Text>
+                  </TouchableOpacity>
+                ))
+              )}
+            </View>
           </View>
-        </View>
-      )}
+        );
+      })()}
 
       {/* ── Pending deboard: confirmation banner ── */}
       {result.state === 'pendingDeboard' && result.busId && (

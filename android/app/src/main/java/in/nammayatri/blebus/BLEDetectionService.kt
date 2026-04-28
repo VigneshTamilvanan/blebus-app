@@ -8,19 +8,29 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
+import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 
 class BLEDetectionService : Service() {
 
     companion object {
+        private const val TAG = "BLEService"
         const val EXTRA_CUSTOM_NAMES = "customNames"
 
         @Volatile
@@ -45,7 +55,12 @@ class BLEDetectionService : Service() {
         private const val STABILITY_MS     = 6_000L
         private const val EXIT_RSSI        = -109.0 // exit when signal equiv. to ~6m
         private const val EXIT_MS          = 5_000L
-        private const val STALE_MS         = 12_000L // extended: tolerate BLE scan gaps when screen is off
+        private const val STALE_MS         = 12_000L // screen-on stale window
+        // When screen is off, Android forces BLE to OPPORTUNISTIC mode → scan gaps of 15-30s.
+        // Use much larger thresholds so those gaps don't trigger false deboarding.
+        private const val SLEEP_STALE_MS   = 45_000L // screen-off: don't expire across a scan gap
+        private const val SLEEP_EXIT_MS    = 25_000L // screen-off: wait out the gap before flagging
+        private const val SCAN_WATCHDOG_MS = 12_000L // restart scan if no BLE packet received in this window
         private const val ROLLING_WINDOW   = 5
         private const val TREND_WINDOW     = 6
         private const val TREND_SLOPE_DB   = 0.4
@@ -85,10 +100,15 @@ class BLEDetectionService : Service() {
     private var boardedAtMs: Long?      = null
     private var pendingDeboardSince: Long? = null
     private var ambiguousCandidates: List<String> = emptyList()
-    private var rivalSince: Long?       = null
-    private var rivalId: String?        = null
-    private var switchDismissedAt: Long?= null  // cooldown after user dismisses a switch prompt
-    private var reconfirmDone           = false  // re-confirmation fired at most once per boarding
+    private var rivalSince: Long?        = null
+    private var rivalId: String?         = null
+    private var switchDismissedAt: Long? = null  // cooldown after user dismisses a switch prompt
+    private var reconfirmDone            = false  // re-confirmation fired at most once per boarding
+    // Wall-clock epoch ms of the last tick where the confirmed beacon was actually visible.
+    // Used as the deboard time when the phone was asleep — more accurate than Date.now() on wakeup.
+    private var lastBeaconSeenMs: Long?  = null
+    private var lastBeaconSeenLat: Double? = null
+    private var lastBeaconSeenLng: Double? = null
     private val tracks                 = mutableMapOf<String, BeaconTrack>()
     private val confirmedHistory       = mutableListOf<Double>()
     private var lastNotifiedState      = "scanning"
@@ -113,9 +133,61 @@ class BLEDetectionService : Service() {
         }
     }
 
-    private var customNames = listOf<String>()
-    private var started     = false   // prevents duplicate scan/tick on repeated onStartCommand
+    private var customNames    = listOf<String>()
+    private var started        = false   // prevents duplicate scan/tick on repeated onStartCommand
     private var wakeLock: PowerManager.WakeLock? = null
+    private lateinit var powerManager: PowerManager
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
+
+    // Latest GPS fix — updated by the location callback, read by the tick/detection.
+    // Both run on handlerThread so no volatile needed.
+    private var latestLat: Double? = null
+    private var latestLng: Double? = null
+
+    private val locationCallback = object : LocationCallback() {
+        override fun onLocationResult(result: LocationResult) {
+            result.lastLocation?.let { loc ->
+                latestLat = loc.latitude
+                latestLng = loc.longitude
+                Log.d(TAG, "GPS fix: %.5f, %.5f  ±${loc.accuracy.toInt()}m".format(loc.latitude, loc.longitude))
+            }
+        }
+    }
+
+    // Tracks the last time any BLE packet was received; used by the watchdog.
+    @Volatile private var lastBlePacketMs = 0L
+
+    // Restarts the BLE scan when the screen turns off/on. Android forces LOW_LATENCY scans
+    // to OPPORTUNISTIC when the screen goes off; restarting picks up the correct mode immediately.
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context, intent: Intent) {
+            val action = intent.action
+            Log.i(TAG, "Screen event: $action — restarting BLE scan")
+            handler.post {
+                if (action == Intent.ACTION_SCREEN_OFF) {
+                    // Clear the exit timer when the screen turns off so that the
+                    // complete BLE scan blackout during sleep never triggers a false deboard.
+                    // Real deboard detection resumes the instant the screen turns back on.
+                    lostSince = null
+                }
+                restartBLEScan()
+            }
+        }
+    }
+
+    // Watchdog: if no BLE packet has arrived for SCAN_WATCHDOG_MS the scanner has likely
+    // silently stopped (common on MIUI/Samsung when screen turns off). Restart it.
+    private val watchdogRunnable = object : Runnable {
+        override fun run() {
+            val now = SystemClock.elapsedRealtime()
+            val gap = now - lastBlePacketMs
+            if (lastBlePacketMs > 0 && gap > SCAN_WATCHDOG_MS) {
+                Log.w(TAG, "Watchdog: no BLE packet for ${gap}ms — restarting scan")
+                restartBLEScan()
+            }
+            handler.postDelayed(this, SCAN_WATCHDOG_MS)
+        }
+    }
 
     // ── BLE scan callback (delivers on a Binder thread → post to handler) ─────
 
@@ -127,6 +199,7 @@ class BLEDetectionService : Service() {
             handler.post { results.forEach { onDevice(it) } }
         }
         override fun onScanFailed(errorCode: Int) {
+            Log.e(TAG, "onScanFailed errorCode=$errorCode — retrying in 3s")
             handler.postDelayed({ startBLEScan() }, 3_000)
         }
     }
@@ -141,9 +214,14 @@ class BLEDetectionService : Service() {
         // Hold a CPU wake lock directly in the service so BLE tick and stale
         // expiry are not disrupted when the screen turns off, independent of
         // the JS-side WakeLockModule.
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "blebus:service")
+        powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "blebus:service")
             .also { it.acquire(12 * 60 * 60 * 1000L) }
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        registerReceiver(screenReceiver, IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+        })
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -158,7 +236,9 @@ class BLEDetectionService : Service() {
             onConfirmSwitch  = { busId -> handler.post { doConfirmSwitch(busId) } }
             onDismissSwitch  = { handler.post { doDismissSwitch() } }
             startBLEScan()
+            startLocationUpdates()
             handler.post(tickRunnable)
+            handler.postDelayed(watchdogRunnable, SCAN_WATCHDOG_MS)
         }
         return START_STICKY
     }
@@ -209,6 +289,8 @@ class BLEDetectionService : Service() {
     override fun onDestroy() {
         onSelectBus = null; onConfirmDeboard = null; onCancelDeboard = null
         onConfirmSwitch = null; onDismissSwitch = null
+        try { unregisterReceiver(screenReceiver) } catch (_: Exception) {}
+        try { fusedLocationClient.removeLocationUpdates(locationCallback) } catch (_: Exception) {}
         handler.removeCallbacksAndMessages(null)
         try {
             (getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager)
@@ -221,6 +303,39 @@ class BLEDetectionService : Service() {
 
     // ── BLE scanning ──────────────────────────────────────────────────────────
 
+    private fun startLocationUpdates() {
+        val request = LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 30_000L)
+            .setMinUpdateIntervalMillis(15_000L)
+            .setWaitForAccurateLocation(false)
+            .build()
+        try {
+            // Deliver on handlerThread so lat/lng writes are on the same thread as tick().
+            fusedLocationClient.requestLocationUpdates(request, locationCallback, handlerThread.looper)
+            // Seed with last known position immediately so the first boarding event has coords.
+            fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
+                if (loc != null) {
+                    handler.post {
+                        if (latestLat == null) {
+                            latestLat = loc.latitude; latestLng = loc.longitude
+                            Log.d(TAG, "GPS seed from lastLocation: ${loc.latitude}, ${loc.longitude}")
+                        }
+                    }
+                }
+            }
+            Log.i(TAG, "Location updates started: 30s interval, BALANCED_POWER_ACCURACY")
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Location permission not granted — GPS unavailable: ${e.message}")
+        }
+    }
+
+    private fun restartBLEScan() {
+        val scanner = try {
+            (getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter?.bluetoothLeScanner
+        } catch (_: Exception) { null }
+        try { scanner?.stopScan(scanCallback) } catch (_: Exception) {}
+        startBLEScan()
+    }
+
     private fun startBLEScan() {
         val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
         if (adapter == null || !adapter.isEnabled) {
@@ -230,8 +345,16 @@ class BLEDetectionService : Service() {
         if (bleScanner == null) {
             handler.postDelayed({ startBLEScan() }, 5_000); return
         }
+        // Use LOW_LATENCY when screen is on for real-time scanning; LOW_POWER when screen is
+        // off — LOW_LATENCY gets forcibly downgraded to OPPORTUNISTIC by Android when the
+        // screen is off, so LOW_POWER (which scans 500ms every 5s) is more reliable.
+        val scanMode = if (powerManager.isInteractive)
+            ScanSettings.SCAN_MODE_LOW_LATENCY
+        else
+            ScanSettings.SCAN_MODE_LOW_POWER
+        Log.i(TAG, "startBLEScan: mode=${if (scanMode == ScanSettings.SCAN_MODE_LOW_LATENCY) "LOW_LATENCY" else "LOW_POWER"} screenOn=${powerManager.isInteractive}")
         val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setScanMode(scanMode)
             .build()
         try {
             bleScanner.startScan(null, settings, scanCallback)
@@ -251,8 +374,10 @@ class BLEDetectionService : Service() {
         if (buf.size > ROLLING_WINDOW) buf.removeAt(0)
         val avg = buf.average()
 
-        lastSeen[busId] = SystemClock.elapsedRealtime()
-        latest[busId]   = BeaconData(busId, isBus, result.rssi, avg)
+        val now = SystemClock.elapsedRealtime()
+        lastSeen[busId]  = now
+        latest[busId]    = BeaconData(busId, isBus, result.rssi, avg)
+        lastBlePacketMs  = now
     }
 
     private fun parseBusId(result: ScanResult): Pair<String, Boolean>? {
@@ -280,9 +405,12 @@ class BLEDetectionService : Service() {
 
     private fun tick() {
         val now = SystemClock.elapsedRealtime()
+        val screenOn = powerManager.isInteractive
 
-        // Expire stale beacons
-        val stale = lastSeen.entries.filter { now - it.value > STALE_MS }.map { it.key }
+        // Expire stale beacons — use a much larger window when the screen is off so
+        // Android's forced OPPORTUNISTIC scan mode (15-30s gaps) doesn't evict live beacons.
+        val effectiveStaleMs = if (screenOn) STALE_MS else SLEEP_STALE_MS
+        val stale = lastSeen.entries.filter { now - it.value > effectiveStaleMs }.map { it.key }
         stale.forEach { id -> latest.remove(id); lastSeen.remove(id); rssiBuffers.remove(id) }
 
         // Build active scan list (bus-only if any bus present)
@@ -293,12 +421,15 @@ class BLEDetectionService : Service() {
         val result = when (state) {
             State.SCANNING, State.CANDIDATE -> handleSearching(scans, now)
             State.AMBIGUOUS                 -> handleAmbiguous(scans, now)
-            State.CONFIRMED                 -> handleConfirmed(scans, now)
+            State.CONFIRMED                 -> handleConfirmed(scans, now, screenOn)
             State.PENDING_DEBOARD           -> handlePendingDeboard(scans, now)
             State.LOST                      -> handleLost(scans, now)
         }
 
         val newState = result["state"] as String
+        if (newState != lastNotifiedState) {
+            Log.i(TAG, "State: $lastNotifiedState → $newState | bus=${result["busId"]} screenOn=${powerManager.isInteractive} beacons=${scans.size}")
+        }
         fireNotifications(lastNotifiedState, newState, result["busId"] as? String)
         lastNotifiedState = newState
 
@@ -397,19 +528,34 @@ class BLEDetectionService : Service() {
         return detection(best.busId, "candidate", conf, best.rawRssi, best.avgRssi, dist, dscore, trend)
     }
 
-    private fun handleConfirmed(scans: List<BeaconData>, now: Long): Map<String, Any?> {
+    private fun handleConfirmed(scans: List<BeaconData>, now: Long, screenOn: Boolean = true): Map<String, Any?> {
         val confirmed = confirmedBus ?: return run { state = State.SCANNING; idle() }
         val cur = scans.find { it.busId == confirmed }
+        val effectiveExitMs = if (screenOn) EXIT_MS else SLEEP_EXIT_MS
+
+        // Update the last-seen timestamp + GPS while the beacon is healthy and visible
+        if (cur != null && cur.avgRssi >= EXIT_RSSI) {
+            lastBeaconSeenMs  = System.currentTimeMillis()
+            lastBeaconSeenLat = latestLat
+            lastBeaconSeenLng = latestLng
+        }
 
         if (cur == null || cur.avgRssi < EXIT_RSSI) {
-            if (lostSince == null) lostSince = now
-            if (now - lostSince!! >= EXIT_MS) {
-                state = State.PENDING_DEBOARD
-                pendingDeboardSince = now
+            if (powerManager.isInteractive) {
+                // Screen is on: run the exit timer normally.
+                if (lostSince == null) lostSince = now
+                if (now - lostSince!! >= effectiveExitMs) {
+                    state = State.PENDING_DEBOARD
+                    pendingDeboardSince = now
+                    lostSince = null
+                    val raw = cur?.rawRssi ?: -99
+                    val avg = cur?.avgRssi ?: -99.0
+                    return detection(confirmed, "pendingDeboard", 0.0, raw, avg, rssiToDistance(avg), 0.0, "receding")
+                }
+            } else {
+                // Screen is off: the device killed BLE scanning — do NOT advance the exit
+                // timer. lostSince is already reset by screenReceiver; keep it null here.
                 lostSince = null
-                val raw = cur?.rawRssi ?: -99
-                val avg = cur?.avgRssi ?: -99.0
-                return detection(confirmed, "pendingDeboard", 0.0, raw, avg, rssiToDistance(avg), 0.0, "receding")
             }
         } else {
             lostSince = null
@@ -513,9 +659,17 @@ class BLEDetectionService : Service() {
     // Called on handlerThread by the companion callbacks
     private fun doSelectBus(busId: String) {
         if (state != State.AMBIGUOUS || !ambiguousCandidates.contains(busId)) return
+        val originalBus  = ambiguousCandidates.firstOrNull()
+        val isSwitching  = boardedAtMs == null || busId != originalBus
         state = State.CONFIRMED; confirmedBus = busId
-        boardedAtMs = System.currentTimeMillis()
-        reconfirmDone = false
+        if (isSwitching) {
+            // Fresh boarding or switching to a different bus — reset the clock and allow
+            // a future re-confirmation on the new journey.
+            boardedAtMs   = System.currentTimeMillis()
+            reconfirmDone = false
+        }
+        // If the user confirmed they're still on the same bus: reconfirmDone stays true
+        // so the 2-minute timer doesn't immediately fire again on the next tick.
         tracks[busId]?.let { confirmedHistory.clear(); confirmedHistory.addAll(it.rssiHistory) }
         tracks.clear(); ambiguousCandidates = emptyList()
         persistState()
@@ -525,6 +679,7 @@ class BLEDetectionService : Service() {
         val bus = confirmedBus ?: return
         state = State.LOST; confirmedBus = null; boardedAtMs = null
         confirmedHistory.clear(); pendingDeboardSince = null; lostSince = null
+        lastBeaconSeenMs = null; lastBeaconSeenLat = null; lastBeaconSeenLng = null
         clearPersistedState()
         val result = detection(bus, "lost", 0.0, -99, -99.0, 99.0, 0.0, "receding")
         lastResult = result; onDetection?.invoke(result, emptyList())
@@ -570,7 +725,12 @@ class BLEDetectionService : Service() {
         "rawRssi" to rawRssi, "avgRssi" to avgRssi,
         "distanceM" to distanceM, "distanceScore" to distanceScore, "trend" to trend,
         "boardedAtMs" to boardedAtMs, "candidates" to candidates,
-        "switchCandidate" to switchCandidate
+        "switchCandidate"   to switchCandidate,
+        "lastBeaconSeenMs"  to lastBeaconSeenMs,
+        "lastBeaconSeenLat" to lastBeaconSeenLat,
+        "lastBeaconSeenLng" to lastBeaconSeenLng,
+        "lat"               to latestLat,
+        "lng"               to latestLng
     )
 
     // ── Math helpers ──────────────────────────────────────────────────────────

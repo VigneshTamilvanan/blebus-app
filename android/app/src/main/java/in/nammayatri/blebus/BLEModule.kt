@@ -101,15 +101,26 @@ class BLEModule(ctx: ReactApplicationContext) : ReactContextBaseJavaModule(ctx) 
             putArray("candidates", cands)
             val sc = result["switchCandidate"] as? String
             if (sc != null) putString("switchCandidate", sc) else putNull("switchCandidate")
+            val lbs = (result["lastBeaconSeenMs"] as? Number)?.toDouble()
+            if (lbs != null) putDouble("lastBeaconSeenMs", lbs) else putNull("lastBeaconSeenMs")
+            val lbLat = result["lastBeaconSeenLat"] as? Double
+            val lbLng = result["lastBeaconSeenLng"] as? Double
+            if (lbLat != null) putDouble("lastBeaconSeenLat", lbLat) else putNull("lastBeaconSeenLat")
+            if (lbLng != null) putDouble("lastBeaconSeenLng", lbLng) else putNull("lastBeaconSeenLng")
+            val lat = result["lat"] as? Double
+            val lng = result["lng"] as? Double
+            if (lat != null) putDouble("lat", lat) else putNull("lat")
+            if (lng != null) putDouble("lng", lng) else putNull("lng")
         }
 
         val scansArray = Arguments.createArray()
         for (scan in rawScans) {
             val s = Arguments.createMap()
-            s.putString("busId",   scan["busId"]  as? String ?: "")
-            s.putBoolean("isBus",  scan["isBus"]  as? Boolean ?: false)
-            s.putDouble("rawRssi", (scan["rawRssi"] as? Number)?.toDouble() ?: 0.0)
-            s.putDouble("avgRssi", (scan["avgRssi"] as? Number)?.toDouble() ?: 0.0)
+            s.putString("busId",     scan["busId"]     as? String ?: "")
+            s.putBoolean("isBus",    scan["isBus"]     as? Boolean ?: false)
+            s.putDouble("rawRssi",   (scan["rawRssi"]  as? Number)?.toDouble() ?: 0.0)
+            s.putDouble("avgRssi",   (scan["avgRssi"]  as? Number)?.toDouble() ?: 0.0)
+            s.putDouble("distanceM", (scan["distanceM"] as? Number)?.toDouble() ?: 0.0)
             scansArray.pushMap(s)
         }
 
