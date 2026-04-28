@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 
@@ -44,7 +45,7 @@ class BLEDetectionService : Service() {
         private const val STABILITY_MS     = 6_000L
         private const val EXIT_RSSI        = -109.0 // exit when signal equiv. to ~6m
         private const val EXIT_MS          = 5_000L
-        private const val STALE_MS         = 6_000L
+        private const val STALE_MS         = 12_000L // extended: tolerate BLE scan gaps when screen is off
         private const val ROLLING_WINDOW   = 5
         private const val TREND_WINDOW     = 6
         private const val TREND_SLOPE_DB   = 0.4
@@ -55,6 +56,7 @@ class BLEDetectionService : Service() {
         private const val AMBIGUOUS_SIGNAL_FLOOR = -110.0  // weaker floor for second bus in ambiguous check
         private const val AMBIGUOUS_DISTANCE_M   = 3.0     // if both buses within this distance, ask user regardless of RSSI gap
         private const val PENDING_DEBOARD_MS   = 30_000L // auto-deboard after 30s if no response
+        private const val RECONFIRM_MS         = 120_000L // re-ask user if second bus still visible 2 min after boarding
         private const val SWITCH_WEAK_THRESHOLD = -98.0  // confirmed signal must be below this to consider switching
         private const val SWITCH_RIVAL_MARGIN   = 5.0    // rival must be this much stronger (dBm)
         private const val SWITCH_RIVAL_MS       = 5_000L // rival must sustain advantage for this long
@@ -86,6 +88,7 @@ class BLEDetectionService : Service() {
     private var rivalSince: Long?       = null
     private var rivalId: String?        = null
     private var switchDismissedAt: Long?= null  // cooldown after user dismisses a switch prompt
+    private var reconfirmDone           = false  // re-confirmation fired at most once per boarding
     private val tracks                 = mutableMapOf<String, BeaconTrack>()
     private val confirmedHistory       = mutableListOf<Double>()
     private var lastNotifiedState      = "scanning"
@@ -112,6 +115,7 @@ class BLEDetectionService : Service() {
 
     private var customNames = listOf<String>()
     private var started     = false   // prevents duplicate scan/tick on repeated onStartCommand
+    private var wakeLock: PowerManager.WakeLock? = null
 
     // ── BLE scan callback (delivers on a Binder thread → post to handler) ─────
 
@@ -134,6 +138,12 @@ class BLEDetectionService : Service() {
     override fun onCreate() {
         super.onCreate()
         ensureNotificationChannel()
+        // Hold a CPU wake lock directly in the service so BLE tick and stale
+        // expiry are not disrupted when the screen turns off, independent of
+        // the JS-side WakeLockModule.
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "blebus:service")
+            .also { it.acquire(12 * 60 * 60 * 1000L) }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -205,6 +215,7 @@ class BLEDetectionService : Service() {
                 .adapter?.bluetoothLeScanner?.stopScan(scanCallback)
         } catch (_: Exception) {}
         handlerThread.quitSafely()
+        wakeLock?.let { if (it.isHeld) it.release() }
         super.onDestroy()
     }
 
@@ -293,7 +304,8 @@ class BLEDetectionService : Service() {
 
         val rawScansMap = latest.values.map { b ->
             mapOf<String, Any>("busId" to b.busId, "isBus" to b.isBus,
-                "rawRssi" to b.rawRssi, "avgRssi" to b.avgRssi)
+                "rawRssi" to b.rawRssi, "avgRssi" to b.avgRssi,
+                "distanceM" to rssiToDistance(b.avgRssi))
         }
         lastResult   = result
         lastRawScans = rawScansMap
@@ -372,6 +384,7 @@ class BLEDetectionService : Service() {
                 state        = State.CONFIRMED
                 confirmedBus = best.busId
                 boardedAtMs  = System.currentTimeMillis()
+                reconfirmDone = false
                 confirmedHistory.clear(); confirmedHistory.addAll(track.rssiHistory)
                 lostSince = null; tracks.clear()
                 return detection(best.busId, "confirmed", conf, best.rawRssi, best.avgRssi, dist, dscore, trend)
@@ -412,6 +425,26 @@ class BLEDetectionService : Service() {
         val dist   = rssiToDistance(cur.avgRssi)
         val dscore = distanceToScore(dist)
         val conf   = confidence(dscore, STABILITY_MS)
+
+        // ── Re-confirmation after 2 minutes ──────────────────────────────────
+        // If a second bus is still visible within ambiguous criteria 2 min after
+        // boarding, re-ask the user once — they may have boarded the wrong bus.
+        if (!reconfirmDone && boardedAtMs != null
+            && System.currentTimeMillis() - boardedAtMs!! >= RECONFIRM_MS) {
+            val second = scans.filter { it.busId != confirmed && it.isBus && it.avgRssi > AMBIGUOUS_SIGNAL_FLOOR }
+                .maxByOrNull { it.avgRssi }
+            if (second != null) {
+                val secondDist = rssiToDistance(second.avgRssi)
+                val closeRssi  = Math.abs(cur.avgRssi - second.avgRssi) <= AMBIGUOUS_MARGIN
+                val bothNear   = dist <= AMBIGUOUS_DISTANCE_M && secondDist <= AMBIGUOUS_DISTANCE_M
+                if (closeRssi || bothNear) {
+                    reconfirmDone = true
+                    state = State.AMBIGUOUS
+                    ambiguousCandidates = listOf(confirmed, second.busId)
+                    return detection(null, "ambiguous", 0.0, 0, 0.0, 0.0, 0.0, "stable", ambiguousCandidates)
+                }
+            }
+        }
 
         // ── Bus-switch candidate detection ────────────────────────────────────
         // If a rival bus is significantly stronger and the current signal is
@@ -482,6 +515,7 @@ class BLEDetectionService : Service() {
         if (state != State.AMBIGUOUS || !ambiguousCandidates.contains(busId)) return
         state = State.CONFIRMED; confirmedBus = busId
         boardedAtMs = System.currentTimeMillis()
+        reconfirmDone = false
         tracks[busId]?.let { confirmedHistory.clear(); confirmedHistory.addAll(it.rssiHistory) }
         tracks.clear(); ambiguousCandidates = emptyList()
         persistState()

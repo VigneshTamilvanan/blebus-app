@@ -29,10 +29,11 @@ export type DetectionState = 'scanning' | 'candidate' | 'ambiguous' | 'confirmed
 export type SignalTrend    = 'approaching' | 'receding' | 'stable';
 
 export interface ScanResult {
-  busId:   string;
-  isBus:   boolean;  // true = real bus beacon (manufacturer data / NY-BUS- prefix)
-  rawRssi: number;
-  avgRssi: number;
+  busId:     string;
+  isBus:     boolean;  // true = real bus beacon (manufacturer data / NY-BUS- prefix)
+  rawRssi:   number;
+  avgRssi:   number;
+  distanceM: number;
 }
 
 export interface DetectionResult {
